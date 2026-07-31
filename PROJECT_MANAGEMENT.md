@@ -15,8 +15,14 @@ If `CLAUDE.md` is the *rules* of the project, this file is the *state* of the pr
    who owns it. Do not pick up a task someone else already owns, and do not start work
    that touches the same files as another agent's in-progress task without coordinating
    first (leave a note in that task's Notes column).
-2. **Claim before you code.** Put your agent name in **Owner** and set **Status** to
-   `IN PROGRESS`. An unclaimed task is fair game; a claimed one is not.
+2. **Claim before you code — a claim is exclusive.** Put your agent name in **Owner** and
+   set **Status** to `IN PROGRESS` (this *books* the task). A task that has an owner
+   belongs to that owner alone: no other agent may work on it, complete it, or reassign it
+   — until the owner releases it. To **pre-book** a task you intend to do later but aren't
+   starting yet, set yourself as **Owner** and **Status** to `RESERVED`; a `RESERVED` task
+   is exclusive to its owner exactly like a booked one. This keeps two agents from aiming
+   at the same task. An unclaimed task is fair game; an owned one is not. (The human can
+   always override.)
 3. **Respect the layer boundaries** from `CLAUDE.md` §5 (`ingress/` · `risk/` ·
    `execution/`). Tasks are scoped to a layer on purpose so two agents can work in
    parallel without stepping on each other. `risk/` stays pure — no I/O.
@@ -40,7 +46,8 @@ If `CLAUDE.md` is the *rules* of the project, this file is the *state* of the pr
 |---|---|
 | `BACKLOG` | Defined but not ready to start (usually blocked by an earlier phase). |
 | `TODO` | Ready to be claimed. All dependencies are `DONE`. |
-| `IN PROGRESS` | Actively being worked. Has an Owner. |
+| `IN PROGRESS` | Booked — actively being worked. Has an Owner; exclusive to that owner. |
+| `RESERVED` | Pre-booked by its owner for future work. Exclusive to that owner — no other agent may pick it up. The owner moves it to `IN PROGRESS` when they start. |
 | `BLOCKED` | Waiting on a decision, an answer, or another task. Reason in Notes. |
 | `IN REVIEW` | Phase-ending work — pushed to `main` and awaiting the human's phase approval (`CLAUDE.md` §14). |
 | `DONE` | Complete and pushed to `main`. An agent sets this itself once the work is on `main`. Do not reopen — file a new task instead. |
