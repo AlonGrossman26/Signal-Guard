@@ -1,0 +1,46 @@
+# Continuous integration for the SignalGuard backend.
+#
+# Since agents now commit straight to `main` (CLAUDE.md §4) with no PR review
+# gate, this is the automated backstop: every push runs the linter, the strict
+# type checker, and the pure test suite. It deliberately runs only the
+# non-integration tests (`-m "not integration"`) so it needs no Postgres or
+# Redis — the pure `risk/` engine and everything else that avoids I/O is fully
+# covered here. Integration tests that require live services run separately.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to the same ref cancels the older in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: backend — ruff · mypy · pytest
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Lint (ruff)
+        run: uv run ruff check .
+
+      - name: Type-check (mypy --strict)
+        run: uv run mypy src
+
+      - name: Test (pure suite, no live services)
+        run: uv run pytest -q -m "not integration"
