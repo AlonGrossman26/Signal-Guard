@@ -30,11 +30,12 @@ If `CLAUDE.md` is the *rules* of the project, this file is the *state* of the pr
 4. **Respect phase order and dependencies.** Don't start a task whose `Depends on` isn't
    `DONE`. Phases are sequential (`CLAUDE.md` §14) — finish and get sign-off on one
    before opening the next.
-5. **Keep the board honest.** Update **Status** as you progress. When you finish, first
-   **`git pull --rebase origin main` again, re-run the checks, and resolve any conflict
-   locally** (the end check — `CLAUDE.md` §4) so you never clobber another agent who
-   pushed while you worked; never force-push. Then push your work **straight to `main`**
-   (no branches, no PRs) and set the task to `DONE` yourself. The one exception is
+5. **Keep the board honest.** Update **Status** as you progress. When you finish,
+   **commit your work, then `git pull --rebase origin main`, re-run the checks, and
+   resolve any conflict locally** (the end check — `CLAUDE.md` §4; commit first, because
+   a rebase with uncommitted changes fails) so you never clobber another agent who pushed
+   while you worked; never force-push. Then push **straight to `main`** (no branches, no
+   PRs) and set the task to `DONE` yourself. The one exception is
    **phase-ending work**: mark it
    `IN REVIEW` instead, because `CLAUDE.md` §14 still requires the human to approve before
    the next phase begins. Either way, leave a short handoff in **Notes**: what changed,
