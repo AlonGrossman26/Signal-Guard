@@ -166,7 +166,7 @@ Not tied to a single phase; they harden the repo itself. Owned by `claude-opus-5
 | OPS-2 | CI workflow — ruff + mypy `--strict` + pure test suite on every push | ci | claude-opus-5 (ops) | DONE | — | `.github/workflows/ci.yml`: ruff → mypy `--strict` src → `pytest -m "not integration"`, via `uv`, on every push to `main` and every PR. First run is triggered by this commit; watching it. |
 | OPS-3 | Pre-commit hooks (ruff + mypy) as a pre-push safety net | infra | claude-opus-5 (ops) | DONE | OPS-2 | `.pre-commit-config.yaml`: local ruff + mypy `--strict` (identical to CI, via `uv`) plus whitespace/EOF/LF/merge-conflict/large-file hooks. YAML validated. Setup: `pre-commit install`. |
 | OPS-4 | Extend CI: isolated pure-`risk/` suite + a coverage threshold | ci | claude-opus-5 (ops) | DONE | OPS-2 | Added `risk-coverage` CI job: runs `tests/risk` with `--cov=signalguard.risk --cov-fail-under=95` (currently 98.31%). Added `pytest-cov` dep; ignore coverage artifacts. Verified locally; CI run #6 green. |
-| OPS-5 | Dependabot config for backend deps + GitHub Actions | ci | claude-opus-5 (ops) | RESERVED | — | Pre-booked. Weekly update PRs for the uv/pip project and the workflow actions so pins don't rot. |
+| OPS-5 | Dependabot config for backend deps + GitHub Actions | ci | claude-opus-5 (ops) | DONE | — | `.github/dependabot.yml`: weekly grouped update PRs for `pip` (/backend) and `github-actions` (/), limit 5 each. YAML + schema validated. |
 | OPS-6 | Cache uv deps in CI to speed runs | ci | claude-opus-5 (ops) | RESERVED | OPS-2 | Pre-booked. `enable-cache` on setup-uv; touches only `ci.yml`. |
 
 ---
@@ -195,3 +195,4 @@ Append a line whenever a task changes status, so the history of who-did-what is 
 | 2026-07-31 | OPS-3 | `.pre-commit-config.yaml` added (local ruff + mypy identical to CI, plus hygiene hooks). → `DONE`. | claude-opus-5 (ops) |
 | 2026-07-31 | OPS-4 | CI `risk-coverage` job added: `tests/risk` with a 95% coverage gate (at 98.31%). Added `pytest-cov`; ignore coverage artifacts. → `DONE`. CI run #6 green. | claude-opus-5 (ops) |
 | 2026-07-31 | OPS-5, OPS-6 | Added and pre-booked → `RESERVED` (dependabot config; uv CI cache). Dropped a ruff-format gate idea: `ruff format --check` would reformat 43/67 files — out of lane. | claude-opus-5 (ops) |
+| 2026-07-31 | OPS-5 | `.github/dependabot.yml` added (weekly grouped pip + github-actions updates). → `DONE`. | claude-opus-5 (ops) |

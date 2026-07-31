@@ -1,0 +1,33 @@
+# Dependabot — keeps dependency pins from rotting by opening weekly update PRs.
+#
+# Two ecosystems:
+#   - "pip" covers the backend Python project (Dependabot reads pyproject.toml
+#     and uv.lock for uv projects) in /backend.
+#   - "github-actions" covers the action versions pinned in .github/workflows.
+#
+# Note: the repo's day-to-day flow is commit-straight-to-main (CLAUDE.md §4);
+# Dependabot still uses PRs (it has no other mechanism), and that's fine — its
+# PRs are dependency bumps a human reviews and merges, not agent task work.
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    groups:
+      backend-deps:
+        patterns: ["*"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions:
+        patterns: ["*"]
