@@ -66,13 +66,11 @@ A **Bash tool (Git Bash, POSIX sh)** is also available. Prefer it for `.sh` scri
 
 **Docker.** Docker Desktop must be running. Use `docker compose` (v2, space) — not `docker-compose`. From the host, Postgres is `localhost:5432` and Redis `localhost:6379`; from inside a container, address services by their compose service name (`db`, `redis`). Never hardcode `localhost` in application config.
 
-**Git.** Commit only when asked. Never commit to the default branch — branch first. End commit messages with:
+**Git.** Work directly on `main`. Commit each piece of finished work and push it straight to `main` — do **not** create feature branches, and do **not** open pull requests. Push as soon as the work is complete so `main` always reflects the latest state and other agents pick it up on their next pull. End commit messages with:
 
 ```
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 ```
-
-**Always push and open a pull request when you finish.** A task is not done until the work is on GitHub and reviewable. When you complete a piece of work: commit it, `git push -u origin <branch>`, and open a pull request against the default branch. Never leave finished work sitting only on a local branch — push it and raise the PR so the human (and other agents) can review and merge it.
 
 **Never commit:** `.env`, any real API key (even testnet), any database dump. `.env.example` carries the key names with empty values.
 
