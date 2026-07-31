@@ -1,0 +1,28 @@
+# EditorConfig — https://editorconfig.org
+#
+# Companion to .gitattributes. .gitattributes fixes line endings at the git
+# layer (checkout/commit); this file tells the *editor* to write the right
+# bytes in the first place, so a Windows editor never reintroduces CRLF or
+# tabs that then break a script inside a Linux container (see CLAUDE.md §4).
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# Web/config files conventionally use 2-space indents.
+[*.{ts,tsx,js,jsx,json,yml,yaml}]
+indent_size = 2
+
+# Makefiles require real tabs.
+[Makefile]
+indent_style = tab
+
+# Markdown: trailing whitespace can be a deliberate hard line break.
+[*.md]
+trim_trailing_whitespace = false
