@@ -23,11 +23,14 @@ If `CLAUDE.md` is the *rules* of the project, this file is the *state* of the pr
 4. **Respect phase order and dependencies.** Don't start a task whose `Depends on` isn't
    `DONE`. Phases are sequential (`CLAUDE.md` §14) — finish and get sign-off on one
    before opening the next.
-5. **Keep the board honest.** Update **Status** as you progress, and when you finish move
-   it to `IN REVIEW` (never straight to `DONE` — the human signs off). Leave a short
-   handoff in **Notes**: what changed, what's not yet handled, what the next agent needs.
-   Partial work is never marked done. **Fail closed applies here too** — if a task is
-   ambiguous, mark it `BLOCKED`, write the open question in Notes, and ask the human.
+5. **Keep the board honest.** Update **Status** as you progress. When you finish, commit
+   and push your work **straight to `main`** (`CLAUDE.md` §4 — no branches, no PRs) and
+   set the task to `DONE` yourself. The one exception is **phase-ending work**: mark it
+   `IN REVIEW` instead, because `CLAUDE.md` §14 still requires the human to approve before
+   the next phase begins. Either way, leave a short handoff in **Notes**: what changed,
+   what's not yet handled, what the next agent needs. Partial work is never marked done.
+   **Fail closed applies here too** — if a task is ambiguous, mark it `BLOCKED`, write the
+   open question in Notes, and ask the human.
 6. **One task, one owner at a time.** If you must hand off, set Status back to `TODO` (or
    `BLOCKED`) and clear the Owner so it's visibly available.
 
@@ -39,8 +42,8 @@ If `CLAUDE.md` is the *rules* of the project, this file is the *state* of the pr
 | `TODO` | Ready to be claimed. All dependencies are `DONE`. |
 | `IN PROGRESS` | Actively being worked. Has an Owner. |
 | `BLOCKED` | Waiting on a decision, an answer, or another task. Reason in Notes. |
-| `IN REVIEW` | Work is complete; awaiting human sign-off. |
-| `DONE` | Signed off by the human. Do not reopen — file a new task instead. |
+| `IN REVIEW` | Phase-ending work — pushed to `main` and awaiting the human's phase approval (`CLAUDE.md` §14). |
+| `DONE` | Complete and pushed to `main`. An agent sets this itself once the work is on `main`. Do not reopen — file a new task instead. |
 
 ---
 
