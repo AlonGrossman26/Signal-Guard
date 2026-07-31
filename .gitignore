@@ -15,6 +15,12 @@ venv/
 dist/
 build/
 
+# Coverage artifacts (CI runs coverage — OPS-4)
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
 # Database dumps — never commit these either.
 *.sql.gz
 *.dump

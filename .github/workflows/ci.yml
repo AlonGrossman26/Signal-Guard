@@ -44,3 +44,32 @@ jobs:
 
       - name: Test (pure suite, no live services)
         run: uv run pytest -q -m "not integration"
+
+  risk-coverage:
+    name: risk/ — pure engine coverage gate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      # The risk/ package is the heart of the product and is required to be
+      # pure and fully tested (CLAUDE.md §5, §13). Run ONLY its isolated suite
+      # (no services, no I/O) and fail the build if coverage of the package
+      # drops below 95% — it sits at ~98% today, so this catches regressions,
+      # not green-field gaps.
+      - name: Pure risk/ suite + coverage gate
+        run: >-
+          uv run pytest tests/risk -q
+          --cov=signalguard.risk
+          --cov-report=term-missing
+          --cov-fail-under=95
