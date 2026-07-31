@@ -51,26 +51,39 @@ stay `BLOCKED`. Record answers here as they arrive.
 
 | # | Question | Answer |
 |---|---|---|
-| Q1 | In-flight order when the kill switch fires mid-submission? | _unanswered_ |
-| Q2 | Broker unreachable when an alert arrives — queue or reject? | _unanswered_ |
-| Q3 | How is `liquid_equity` defined with open positions — mark-to-market or cash only? | _unanswered_ |
-| Q4 | Does editing a risk profile while a position is open apply retroactively? | _unanswered_ |
-| Q5 | Failure mode if Redis is down but Postgres is up? | _unanswered_ |
+| Q1 | In-flight order when the kill switch fires mid-submission? | _unanswered_ — **proposed:** let it complete, never abandon it (an abandoned request loses the order ID → orphan position). `LOCKED` written first, sweep runs twice, and the reconciler treats `LOCKED` as a continuously-enforced state. Plan §3. |
+| Q2 | Broker unreachable when an alert arrives — queue or reject? | _unanswered_ — **proposed:** reject. No account state → no snapshot → no evaluation; and rule 3 already calls a 30s-old signal stale, so a queue would release trades at prices that no longer exist. Caveat raised for `action: "close"`. Plan §3. |
+| Q3 | How is `liquid_equity` defined with open positions — mark-to-market or cash only? | _unanswered_ — **proposed:** neither name survives. Mark-to-market is the sizing base *and* the drawdown basis; free cash is the affordability ceiling already in §7. Snapshot carries `total_equity` / `free_balance` / `position_value`. Plan §3. |
+| Q4 | Does editing a risk profile while a position is open apply retroactively? | _unanswered_ — **proposed:** never retroactive to open positions (the system never initiates a trade on its own); gates apply from the next decision. Tightening `max_daily_dd_pct` can trip instantly — UI must warn. Plan §3. |
+| Q5 | Failure mode if Redis is down but Postgres is up? | _unanswered_ — **proposed:** reject all new alerts (unknown kill-switch state must read as `LOCKED`), but keep persisting them, and keep the kill switch + reconciler working off Postgres. Plan §3. |
+
+### New open questions raised in Phase 0 (blocking)
+
+Surfaced while working through the spec. Flagged, not guessed — see plan §4.
+
+| # | Question | Blocks | Status |
+|---|---|---|---|
+| OQ-1 | `reason_code` needs a second **pipeline** family (`BROKER_UNAVAILABLE`, `STATE_UNAVAILABLE`, `ACCOUNT_NOT_FOUND`, `INSTRUMENT_UNAVAILABLE`, `INTERNAL_ERROR`) for rejections that happen before the pure engine can run. | P2-1, P3-3 | _unanswered_ |
+| OQ-2 | Rule 1 precedes rule 2, but the account name is inside the payload. Proposed: check a user-level lock pre-parse, account-level lock post-parse; both return `TRADING_LOCKED`. | P2-1 | _unanswered_ |
+| OQ-3 | The fee/slippage buffer as literally specified **fails** §13's property test (worst-case loss came out 12% over budget in the worked example). Closed form `qty = risk_amount / (stop_distance + entry_price × buffer_rate)` is exact. | P2-2, P2-3 | _unanswered_ |
+| OQ-4 | Storing the payload "verbatim" persists the body `secret` in plaintext, against constraint #6. Proposed: redact `secret`, keep `raw_body_sha256` for integrity. | P0-3, P3-3 | _unanswered_ |
+| OQ-5 | Max age for cached instrument filters when the exchange is unreachable at boot — serve stale (suggest 24h cap) or refuse? | P4-1 | _unanswered_ |
+| OQ-6 | `action: "sell"` on spot, where shorting does not exist. Proposed: `sell` reduces/closes a long; short-side stop logic still implemented and tested in the pure engine but unreachable via the spot adapter. | P2-1, P3-2 | _unanswered_ |
 
 ---
 
 ## Task board
 
 Seeded from the phases in `CLAUDE.md` §14. Add rows as work is broken down further; give
-each a unique ID. **Current phase: 0 — Plan (not started).**
+each a unique ID. **Current phase: 0 — Plan (delivered, awaiting human sign-off).**
 
 ### Phase 0 — Plan (no code)
 
 | ID | Task | Layer | Owner | Status | Depends on | Notes |
 |---|---|---|---|---|---|---|
-| P0-1 | Restate the project, list assumptions, answer/surface the §15 open questions | — | _unclaimed_ | TODO | — | Get sign-off before any code. |
-| P0-2 | Propose the file tree (§5) and get sign-off | — | _unclaimed_ | TODO | — | Sign-off on the §5 layout. |
-| P0-3 | Propose exact table columns (§6) and get sign-off | — | _unclaimed_ | TODO | — | Sign-off before writing any migration. |
+| P0-1 | Restate the project, list assumptions, answer/surface the §15 open questions | — | claude-opus-5 (phase-0) | IN REVIEW | — | Delivered in [`docs/phase-0-plan.md`](./docs/phase-0-plan.md) §1–§3. Q1–Q5 answered as **recommendations only** — human decides. 6 new open questions raised (OQ-1…OQ-6) that block Phase 1/2; see plan §4. |
+| P0-2 | Propose the file tree (§5) and get sign-off | — | claude-opus-5 (phase-0) | IN REVIEW | — | Plan §5. Expands CLAUDE.md §5 layout; no new top-level dirs beyond `backend/`, `frontend/`, `docs/`. |
+| P0-3 | Propose exact table columns (§6) and get sign-off | — | claude-opus-5 (phase-0) | IN REVIEW | — | Plan §6. Proposes 4 tables beyond CLAUDE.md §6 (`sessions`, `webhook_endpoints`, `circuit_breaker_state`, `instruments`) — each justified, each needs explicit sign-off. |
 
 ### Phase 1 — Skeleton
 
@@ -131,3 +144,8 @@ Append a line whenever a task changes status, so the history of who-did-what is 
 | Date (UTC) | Task | Change | By |
 |---|---|---|---|
 | 2026-07-31 | — | Board created and seeded from CLAUDE.md phases. | setup |
+| 2026-07-31 | P0-1, P0-2, P0-3 | Claimed → `IN PROGRESS`. | claude-opus-5 (phase-0) |
+| 2026-07-31 | P0-1 | Plan delivered in `docs/phase-0-plan.md`: project restatement, 13 assumptions, Q1–Q5 recommendations. → `IN REVIEW`. | claude-opus-5 (phase-0) |
+| 2026-07-31 | P0-2 | File tree proposed (plan §5). → `IN REVIEW`. | claude-opus-5 (phase-0) |
+| 2026-07-31 | P0-3 | Exact columns proposed for all 9 §6 tables + 4 justified additions (plan §6). → `IN REVIEW`. | claude-opus-5 (phase-0) |
+| 2026-07-31 | OQ-1…OQ-6 | Six new blocking open questions raised rather than guessed. Phase 1 and 2 stay `BACKLOG` until answered. | claude-opus-5 (phase-0) |
