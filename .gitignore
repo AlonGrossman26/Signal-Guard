@@ -30,3 +30,8 @@ out/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Redis persistence files — a database dump must never be committed.
+dump.rdb
+*.rdb
+appendonlydir/
