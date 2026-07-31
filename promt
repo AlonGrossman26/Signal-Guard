@@ -1,0 +1,341 @@
+# SignalGuard — Build Prompt
+
+You are a senior backend engineer with production experience in trading infrastructure. You are pairing with me to build **SignalGuard**. I am early in my coding journey, so as you work: explain each decision in plain language before you implement it, keep files small and clearly named, and comment anything non-obvious. Stop at the end of every phase and wait for my approval before starting the next one. Do not dump the whole project in one response.
+
+---
+
+## 1. What SignalGuard is
+
+A risk-management middleware that sits between a trader's signal source and their broker.
+
+A strategy (TradingView PineScript alert, a Python script, a bot) fires a webhook. SignalGuard receives it, validates it against the user's own risk rules, sizes the position correctly, and only then forwards an order to the broker. If a rule is violated, the order is **rejected and logged**, never sent. The user watches everything on a live dashboard, gets Telegram/Discord notifications, and has a kill switch that flattens everything instantly.
+
+The product's entire value is that it says **no** reliably. Correctness beats features. A missed trade is an annoyance; a wrongly-sized or unprotected trade is a blown account.
+
+---
+
+## 2. Hard constraints (non-negotiable — violating any of these is a bug)
+
+1. **Fail closed.** Any error, timeout, ambiguity, missing config, or unparseable field → reject the order. Never "assume and proceed."
+
+2. **Paper / testnet only** until I explicitly say otherwise in a later phase. The live-broker adapter must be behind a config flag that defaults to off and refuses to turn on without an explicit confirmation string.
+
+3. **No floats for money or quantities.** Use `Decimal` (Python) end-to-end, `NUMERIC` in Postgres. Never `float`, never `round()` on prices.
+
+4. **Idempotency everywhere.** The same alert delivered twice must produce exactly one order. TradingView retries; scripts have bugs; networks duplicate.
+
+5. **Everything auditable.** Every inbound alert and every risk decision is persisted with a machine-readable reason code, before and independently of whether an order was placed. This table is append-only.
+
+6. **Secrets never touch logs.** Broker API keys, webhook secrets, and tokens are encrypted at rest and redacted in all log output, error messages, and exception traces.
+
+7. **UTC internally.** Store and compute in UTC; convert only at the display layer. The daily-reset time is a per-user configured timezone, and this must be tested across a DST boundary.
+
+---
+
+## 3. Scope
+
+**In scope for v1:**
+
+- Webhook receiver + risk engine + one broker adapter (Binance **testnet**, spot, market and limit orders)
+
+- Auth (email + password, sessions), per-user risk config
+
+- Dashboard: live decision feed, open positions, equity curve, kill switch
+
+- Telegram notifications
+
+- Docker Compose for local dev
+
+**Explicitly out of scope for v1 — do not build these, do not scaffold them, do not add "future" abstractions for them:**
+
+- Billing, subscription tiers, quota enforcement
+
+- Multiple brokers (design the interface for it, implement exactly one)
+
+- Interactive Brokers, MetaTrader, options, futures, margin, leverage
+
+- Backtesting, strategy authoring, charting of arbitrary symbols
+
+- Mobile app, Discord (Telegram first), team/multi-user accounts
+
+---
+
+## 4. Architecture
+
+- **Backend:** Python 3.12, FastAPI, async throughout. `uv` for dependency management.
+
+- **DB:** PostgreSQL 16 via SQLAlchemy 2.0 async + Alembic migrations.
+
+- **Cache/state:** Redis — idempotency keys, rate limits, circuit-breaker and kill-switch state, pub/sub for WebSocket fan-out.
+
+- **Frontend:** Next.js (App Router), TypeScript, Tailwind, TradingView Lightweight Charts.
+
+- **Realtime:** WebSocket from backend → dashboard, fed by Redis pub/sub.
+
+- **Deploy:** Dockerfile per service + `docker-compose.yml`.
+
+Structure the backend in three layers with hard boundaries:
+
+```
+
+ingress/    webhook parsing, auth, dedupe        (knows HTTP, knows nothing about brokers)
+
+risk/       pure decision logic                  (no I/O at all — see below)
+
+execution/  broker adapters, order lifecycle     (knows brokers, knows nothing about HTTP)
+
+```
+
+**The `risk/` package must contain zero I/O.** It takes a fully-populated snapshot (alert + account state + user config) as input and returns a `Decision` object. No DB calls, no network, no clock reads — the current time is passed in. This is what makes the engine testable, and it is the single most important design decision in the project.
+
+---
+
+## 5. Data model
+
+Design these tables; propose the exact columns and get my sign-off before writing migrations.
+
+- `users` — id, email, password_hash, created_at
+
+- `broker_accounts` — user_id, broker, label, encrypted_credentials, is_testnet, is_active
+
+- `risk_profiles` — user_id, and one column per rule parameter (see §6), daily_reset_time, timezone
+
+- `alerts` — raw payload (stored verbatim as JSONB), source_ip, received_at, dedupe_key, parse_status
+
+- `decisions` — alert_id, verdict (`APPROVED` / `REJECTED`), reason_code, rule_snapshot (JSONB, the config as it was at decision time), computed_qty, evaluated_at, latency_ms
+
+- `orders` — decision_id, broker_order_id, symbol, side, type, qty, price, stop_price, status, submitted_at, filled_at, avg_fill_price, fees
+
+- `positions` — broker_account_id, symbol, qty, avg_entry, unrealized_pnl, updated_at
+
+- `equity_snapshots` — broker_account_id, equity, taken_at, is_session_baseline
+
+- `trades` — closed round-trips with realized PnL; this is what the circuit breaker counts
+
+`alerts` and `decisions` are append-only. Never `UPDATE`, never `DELETE`.
+
+---
+
+## 6. The risk engine (the core of the product)
+
+Rules are evaluated **in this exact order**, short-circuiting on the first rejection. Order matters: the cheapest and most absolute checks come first.
+
+| # | Rule | Reject condition | Reason code |
+
+|---|------|------------------|-------------|
+
+| 1 | Kill switch / trading lock | Account is in `LOCKED` state | `TRADING_LOCKED` |
+
+| 2 | Payload validity | Schema invalid, unknown fields, missing required | `INVALID_PAYLOAD` |
+
+| 3 | Staleness | `alert.timestamp` older than `max_alert_age_sec` (default 30) or in the future by >5s | `STALE_ALERT` |
+
+| 4 | Duplicate | `dedupe_key` seen within `dedupe_window_sec` (default 60) | `DUPLICATE_ALERT` |
+
+| 5 | Symbol allowlist | Symbol not in the user's allowed list | `SYMBOL_NOT_ALLOWED` |
+
+| 6 | Mandatory stop-loss | `stop_price` absent, zero, or on the wrong side of entry | `NO_STOP_LOSS` |
+
+| 7 | Circuit breaker | Consecutive-loss count ≥ threshold and cooldown not elapsed | `CIRCUIT_BREAKER_OPEN` |
+
+| 8 | Daily drawdown | `(baseline_equity − current_equity) / baseline_equity ≥ max_daily_dd_pct` | `DAILY_DRAWDOWN_HIT` |
+
+| 9 | Position sizing | Computed qty below the exchange minimum after rounding | `SIZE_BELOW_MINIMUM` |
+
+| 10 | Exposure caps | Open positions ≥ max, or total notional > cap, or symbol already has a position and `allow_pyramiding` is false | `EXPOSURE_LIMIT` |
+
+Precise semantics — implement exactly this, don't improvise:
+
+**Mandatory stop-loss (6).** For a long, reject unless `stop_price < entry_price`; for a short, `stop_price > entry_price`. Also reject if the stop distance is less than `min_stop_distance_pct` of price (default 0.1%) — a near-zero stop produces an absurd position size, which is the classic way this feature is exploited by a buggy script.
+
+**Circuit breaker (7).** Count *closed trades* with realized PnL < 0, consecutively, most recent first. Any winning trade resets the count to zero. On reaching the threshold (default 3), set state `OPEN` and either wait `cooldown_minutes` (default 60) or require manual reset — configurable. State lives in Redis **and** Postgres; it must survive a restart.
+
+**Daily drawdown (8).** `baseline_equity` is snapshotted at the user's configured daily reset time in their timezone. Loss includes realized *and* unrealized PnL. Once tripped, the block persists until the next reset even if equity recovers. This must be correct across a DST change and across a process restart.
+
+**Position sizing (9).** This is a *transform*, not just a check:
+
+```
+
+risk_amount   = liquid_equity × risk_per_trade_pct        # e.g. 1%
+
+stop_distance = abs(entry_price − stop_price)
+
+raw_qty       = risk_amount / stop_distance
+
+qty           = round_down_to_step(raw_qty, symbol.lot_step)
+
+```
+
+Then verify: `qty ≥ symbol.min_qty`, `qty × entry_price ≥ symbol.min_notional`, `qty × entry_price ≤ min(max_notional_per_trade, available_balance)`. Always round **down**. Subtract an estimated fee + slippage buffer (configurable bps) from `risk_amount` first so that a worst-case stop-out still loses no more than the stated risk percentage. Fetch `lot_step` / `min_qty` / `min_notional` from the exchange's instrument-info endpoint at startup and cache them; never hardcode them.
+
+Every decision — approved or rejected — is written to `decisions` with the reason code and a snapshot of the config that produced it, *before* any order is submitted.
+
+---
+
+## 7. Webhook contract
+
+- `POST /webhook/{endpoint_id}` where `endpoint_id` is a long random per-user opaque token.
+
+- Authenticate with an HMAC-SHA256 signature over the raw body in an `X-Signature` header, plus a timestamp header for replay protection. TradingView cannot send custom headers on the free plan — so also support a shared secret inside the JSON body as a documented fallback, and make it clear in the UI that this mode is weaker.
+
+- Rate limit per endpoint (Redis token bucket). Reject oversized bodies before parsing.
+
+- Accept a strict JSON schema; reject anything else:
+
+```json
+
+{
+
+  "secret": "...",
+
+  "id": "unique-per-signal-id",
+
+  "timestamp": "2026-07-31T10:15:00Z",
+
+  "account": "binance-testnet-1",
+
+  "symbol": "BTCUSDT",
+
+  "action": "buy | sell | close",
+
+  "order_type": "market | limit",
+
+  "limit_price": "62000.00",
+
+  "stop_price": "61000.00",
+
+  "take_profit": "64000.00"
+
+}
+
+```
+
+`dedupe_key = hash(endpoint_id, id)`; if `id` is absent, fall back to `hash(endpoint_id, symbol, action, timestamp_rounded_to_second)`. Respond `200` fast (target < 50 ms) after persisting the alert; do the risk evaluation and execution in a background task so the sender never times out.
+
+Also provide `POST /webhook/{endpoint_id}/test`, which runs the full risk pipeline and returns the decision **without** touching the broker. This is the feature users will rely on most.
+
+---
+
+## 8. Broker adapter interface
+
+Define an abstract base class and implement it once for Binance testnet:
+
+```python
+
+async def get_account_state() -> AccountState      # equity, free balance, positions
+
+async def get_instrument(symbol) -> Instrument     # tick size, lot step, min qty, min notional
+
+async def submit_order(order: OrderRequest) -> BrokerOrder
+
+async def cancel_order(broker_order_id) -> None
+
+async def close_all_positions() -> list[BrokerOrder]
+
+async def stream_fills() -> AsyncIterator[Fill]
+
+```
+
+Every method has a timeout, bounded retries with exponential backoff **only on idempotent operations**, and a client-supplied order ID passed to the exchange so a retry can never double-submit. Map all broker errors into a small internal error enum — never leak raw broker exceptions upward.
+
+---
+
+## 9. Execution and reconciliation
+
+- Submit the entry order and its protective stop as an atomic unit where the exchange supports it (OCO / bracket). Where it doesn't: submit the entry, and if the stop placement then fails, **immediately close the position and alert loudly**. Never leave a naked position.
+
+- Run a reconciliation loop every N seconds that pulls the broker's ground truth for orders and positions and repairs local state. The broker is always the source of truth; local state is a cache.
+
+- Handle partial fills, rejected orders, and orders that filled while we thought they'd failed.
+
+- **Kill switch:** cancel all open orders → close all positions at market → set the account to `LOCKED` → notify. It must be a single idempotent endpoint, and it must work even if the risk engine or the WebSocket layer is down.
+
+---
+
+## 10. API and frontend
+
+REST: auth, risk-profile CRUD, broker-account CRUD, decisions list (filterable by reason code), orders, positions, equity curve, kill switch, webhook test.
+
+WebSocket `/ws`: pushes new decisions, order status changes, position updates, equity ticks.
+
+Dashboard pages:
+
+1. **Live** — decision feed streaming in, colour-coded by verdict, each rejection showing its human-readable reason. Open positions table. Big red kill-switch button with a confirmation step.
+
+2. **Risk profile** — a form for every parameter in §6, with a plain-language explanation of each and a live preview: "given $10,000 equity, a $62,000 entry and a $61,000 stop, this sizes 0.161 BTC."
+
+3. **History** — equity curve (Lightweight Charts), trade log, and a breakdown of rejections by reason code.
+
+4. **Setup** — webhook URL, secret, a copy-paste-ready TradingView alert-message template, and the test button.
+
+---
+
+## 11. Security
+
+- Broker credentials: envelope-encrypted (AES-GCM) with a key from the environment; decrypt only in memory at the moment of use.
+
+- Document that users must create broker API keys with **trading enabled and withdrawals disabled**, IP-restricted to the server. Refuse to save a key that the exchange reports as having withdrawal permission, if the API exposes that.
+
+- Password hashing with Argon2id. Session cookies `HttpOnly`, `Secure`, `SameSite=Lax`.
+
+- Structured JSON logging with an automatic redaction filter over a denylist of secret-bearing field names.
+
+---
+
+## 12. Testing (this section is not optional)
+
+Because `risk/` is pure, it is fully unit-testable. Required before any phase is considered done:
+
+- A table-driven test per rule in §6 covering pass, fail, and the boundary exactly at the threshold.
+
+- Position-sizing tests: normal case, stop distance ~0, qty rounding down to below minimum, insufficient balance, fee/slippage buffer applied.
+
+- Rule-ordering test: a payload violating several rules returns the *highest-priority* reason code.
+
+- Idempotency test: the same alert submitted 5× concurrently produces exactly 1 order.
+
+- Daily-drawdown tests across a DST boundary and across a simulated restart.
+
+- Circuit-breaker test: reset on a win, persistence across restart.
+
+- Property-based test (Hypothesis): for any valid inputs, realized loss at the stop never exceeds `risk_per_trade_pct` of equity.
+
+- A fake broker adapter that can be told to time out, partially fill, reject, and double-fill — used for integration tests. No test may touch a real network.
+
+---
+
+## 13. Phases — stop after each one
+
+- **Phase 0 — Plan.** No code. Restate the project in your own words, list every assumption you're making, list open questions, and propose the file tree. Wait for my answers.
+
+- **Phase 1 — Skeleton.** Docker Compose (Postgres, Redis, API), FastAPI app, health check, migrations, config loading, structured logging. Verifiable: `docker compose up` works and `/health` returns green.
+
+- **Phase 2 — Risk engine, standalone.** The pure `risk/` package and its full test suite. No HTTP, no DB, no broker. Verifiable: all tests in §12 pass.
+
+- **Phase 3 — Ingress.** Webhook endpoint, HMAC auth, schema validation, dedupe, alert + decision persistence, the `/test` endpoint.
+
+- **Phase 4 — Execution.** Binance testnet adapter, order submission, stop placement, reconciliation loop, fills → trades → PnL.
+
+- **Phase 5 — Dashboard.** Next.js frontend, WebSocket feed, all four pages, kill switch.
+
+- **Phase 6 — Ops.** Telegram notifications, deploy docs, a runbook for "what to do when it breaks at 3am."
+
+At the end of each phase: show me the file tree, list what changed, give me the exact commands to run and verify it myself, and state honestly what is *not* yet handled.
+
+---
+
+## 14. Before you write any code
+
+Answer these in Phase 0:
+
+1. What happens to an in-flight order when the kill switch fires mid-submission?
+
+2. If the broker is unreachable when an alert arrives, do we queue or reject? (Argue for one; I'll decide.)
+
+3. How is `liquid_equity` defined when positions are open — mark-to-market, or cash only?
+
+4. If a user edits their risk profile while a position is open, does the change apply retroactively?
+
+5. What's the failure mode if Redis is down but Postgres is up?
+
+Then wait.
