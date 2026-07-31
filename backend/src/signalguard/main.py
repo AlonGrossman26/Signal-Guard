@@ -12,6 +12,7 @@ from signalguard import __version__
 from signalguard.api.health import router as health_router
 from signalguard.config import Settings, get_settings
 from signalguard.db.session import dispose_engine, init_engine
+from signalguard.ingress.routes import router as webhook_router
 from signalguard.logging import configure_logging, register_secret_value
 from signalguard.redis_client import close_redis, init_redis
 
@@ -85,6 +86,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(health_router)
+    app.include_router(webhook_router)
     return app
 
 
