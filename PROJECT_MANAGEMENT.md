@@ -145,7 +145,7 @@ each a unique ID. **Current phase: 1 — Skeleton (delivered, awaiting human sig
 
 | ID | Task | Layer | Owner | Status | Depends on | Notes |
 |---|---|---|---|---|---|---|
-| P5-1 | REST API: profiles, broker accounts, decisions, orders, positions, equity, kill switch | api | _unclaimed_ | BACKLOG | P4-x | Decisions filterable by reason code. |
+| P5-1 | REST API: profiles, broker accounts, decisions, orders, positions, equity, kill switch | api | claude (phase-5) | IN REVIEW | P4-x | Full `api/` package under `/api`: session auth (Argon2id, revocable server-side sessions), risk-profile GET/PUT (partial, version-bump, money-as-string, tz validated), broker-account + webhook-endpoint CRUD (credentials write-only), decisions (reason-code filter + pagination) / orders / positions / equity read models, kill switch + unlock (reuses tested `execution.killswitch`). 40 new integration tests; whole suite 326 green vs live PG+Redis; ruff + mypy `--strict` clean. **Not yet handled:** live-broker sweep in the kill endpoint (needs the broker-credential→adapter path the execution runtime owns; the reconciler enforces flatten on LOCKED meanwhile), and refusing an exchange key with withdrawal permission (§12, needs a live exchange call). On branch `claude/task-booking-completion-o2trly`, not `main`. |
 | P5-2 | WebSocket `/ws` fed by Redis pub/sub | api | _unclaimed_ | BACKLOG | P5-1 | Decisions, orders, positions, equity. |
 | P5-3 | Next.js frontend — Live, Risk profile, History, Setup pages | frontend | _unclaimed_ | BACKLOG | P5-1, P5-2 | Kill-switch button with confirm step. |
 
@@ -197,3 +197,6 @@ Append a line whenever a task changes status, so the history of who-did-what is 
 | 2026-07-31 | OPS-5, OPS-6 | Added and pre-booked → `RESERVED` (dependabot config; uv CI cache). Dropped a ruff-format gate idea: `ruff format --check` would reformat 43/67 files — out of lane. | claude-opus-5 (ops) |
 | 2026-07-31 | OPS-5 | `.github/dependabot.yml` added (weekly grouped pip + github-actions updates). → `DONE`. | claude-opus-5 (ops) |
 | 2026-07-31 | OPS-6 | uv dependency caching enabled on both CI jobs (keyed on `backend/uv.lock`). → `DONE`. | claude-opus-5 (ops) |
+| 2026-07-31 | P5-1 | Booked → `IN PROGRESS`. Building the dashboard REST API (auth+sessions, risk-profile CRUD, broker-account+webhook CRUD, decisions/orders/positions/equity read models, kill switch). | claude (phase-5) |
+| 2026-07-31 | P5-1 | Delivered the `api/` package (7 route modules + schemas + session security) and 40 integration tests. Full suite 326 pass vs live Postgres+Redis; ruff + mypy `--strict` clean. → `IN REVIEW`. Pushed to `claude/task-booking-completion-o2trly` (this session is branch-scoped, not `main`). | claude (phase-5) |
+| 2026-07-31 | P3-x, P4-x | **Board/reality reconciliation (flag, not a claim of completion):** the Phase 3 (`0946bb6`) and Phase 4 (`595224f`) code is already merged and its tests pass against live PG+Redis, yet those rows still read `BACKLOG`. Left as-is pending the human — noting the discrepancy here so the board and codebase stop silently disagreeing. Human to confirm their real status. | claude (phase-5) |
