@@ -1,0 +1,92 @@
+# Local development stack: Postgres, Redis, API.
+#
+# Run:      docker compose up -d --build
+# Logs:     docker compose logs -f api
+# Health:   Invoke-RestMethod http://localhost:8000/health     (PowerShell)
+#           curl http://localhost:8000/health                  (Git Bash)
+#
+# From the HOST, Postgres is localhost:5432 and Redis localhost:6379.
+# From INSIDE a container, they are `db:5432` and `redis:6379` — the service
+# names below. Application config uses the service names; never localhost.
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      # Deterministic collation, so ORDER BY does not vary by host locale.
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # The API waits for this to pass before it starts, so it never boots into
+      # a database that is still initialising.
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # appendonly yes: circuit-breaker and kill-switch state must survive a
+    # restart (CLAUDE.md §7). Postgres remains the durable record — this just
+    # avoids losing the fast path on every bounce.
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+    volumes:
+      # Bind-mount the source for hot reload in development. The named volume on
+      # .venv stops the host (Windows) from shadowing the container's virtualenv,
+      # which would otherwise break every import.
+      - ./backend:/app
+      - venv:/app/.venv
+    command:
+      - uv
+      - run
+      - uvicorn
+      - signalguard.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --reload
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health/live', timeout=3).status == 200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  pgdata:
+  redisdata:
+  venv:

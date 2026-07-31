@@ -1,0 +1,32 @@
+# Secrets — never commit. .env.example carries the key names with empty values.
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Database dumps — never commit these either.
+*.sql.gz
+*.dump
+pgdata/
+
+# Node / Next.js (Phase 5)
+node_modules/
+.next/
+out/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
