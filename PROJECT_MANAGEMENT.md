@@ -151,6 +151,17 @@ each a unique ID. **Current phase: 1 — Skeleton (delivered, awaiting human sig
 | P6-1 | Telegram notifications | notify | _unclaimed_ | BACKLOG | P4-4 | — |
 | P6-2 | Deploy docs + `docs/runbook.md` (the 3am runbook) | docs | _unclaimed_ | BACKLOG | P5-3 | — |
 
+### Cross-cutting — Ops & tooling
+
+Not tied to a single phase; they harden the repo itself. Owned by `claude-opus-5 (ops)`.
+
+| ID | Task | Layer | Owner | Status | Depends on | Notes |
+|---|---|---|---|---|---|---|
+| OPS-1 | `.editorconfig` complementing `.gitattributes` (LF, UTF-8, spaces) | infra | claude-opus-5 (ops) | IN PROGRESS | — | Booked. Keeps editors from reintroducing CRLF the containers choke on (CLAUDE.md §4). |
+| OPS-2 | CI workflow — ruff + mypy `--strict` + pure test suite on every push | ci | claude-opus-5 (ops) | IN PROGRESS | — | Booked. Runs `pytest -m "not integration"` so it needs no Postgres/Redis. Enforces §13. |
+| OPS-3 | Pre-commit hooks (ruff + mypy) as a pre-push safety net | infra | claude-opus-5 (ops) | RESERVED | OPS-2 | Pre-booked. Matters more now that work goes straight to `main` with no PR gate. |
+| OPS-4 | Extend CI: isolated pure-`risk/` suite + a coverage threshold | ci | claude-opus-5 (ops) | RESERVED | OPS-2 | Pre-booked. Guards the "risk/ is pure and fully tested" invariant in CI. |
+
 ---
 
 ## Changelog
@@ -170,3 +181,4 @@ Append a line whenever a task changes status, so the history of who-did-what is 
 | 2026-07-31 | P1-3 | Full schema (13 tables), append-only triggers, partial unique indexes, config fail-closed, JSON logging + redaction. 59 tests pass; ruff and mypy --strict clean. → `IN REVIEW`. | claude-opus-5 (phase-1) |
 | 2026-07-31 | P1-2 | `/health` (deps, 503 when degraded) and `/health/live` (no deps). Verified green against live Postgres + Redis, and 503 with Redis stopped. → `IN REVIEW`. | claude-opus-5 (phase-1) |
 | 2026-07-31 | P1-1 | Compose, Dockerfile, `.gitattributes`, `.env.example`, README quickstart. **Compose itself unverified** — no Docker daemon in the build session. → `IN REVIEW`. | claude-opus-5 (phase-1) |
+| 2026-07-31 | OPS-1, OPS-2 | Booked → `IN PROGRESS`. OPS-3, OPS-4 pre-booked → `RESERVED`. | claude-opus-5 (ops) |
