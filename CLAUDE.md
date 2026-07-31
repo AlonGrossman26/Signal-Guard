@@ -72,6 +72,8 @@ A **Bash tool (Git Bash, POSIX sh)** is also available. Prefer it for `.sh` scri
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 ```
 
+**Always push and open a pull request when you finish.** A task is not done until the work is on GitHub and reviewable. When you complete a piece of work: commit it, `git push -u origin <branch>`, and open a pull request against the default branch. Never leave finished work sitting only on a local branch — push it and raise the PR so the human (and other agents) can review and merge it.
+
 **Never commit:** `.env`, any real API key (even testnet), any database dump. `.env.example` carries the key names with empty values.
 
 ### Intended commands
