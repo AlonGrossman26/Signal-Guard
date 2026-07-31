@@ -2,6 +2,8 @@
 
 Guidance for Claude Code working in this repository. Read this before writing anything.
 
+> **Multiple agents work in this repo. Before you start any task, open [`PROJECT_MANAGEMENT.md`](./PROJECT_MANAGEMENT.md).** It is the shared task board — the "Jira" for the agents on this project. Read it to see what everyone is working on, claim the task you're about to do so no one else picks it up, and update it as you go. Coordinating through that board is not optional; two agents silently editing the same file is exactly the kind of collision it exists to prevent. See §2 for the exact protocol.
+
 ---
 
 ## 1. What this project is
@@ -12,12 +14,15 @@ A strategy (TradingView PineScript alert, a Python script, a bot) fires a webhoo
 
 **The entire value of this product is that it says _no_ reliably.** Correctness beats features. A missed trade is an annoyance; a wrongly-sized or unprotected trade is a blown account. When behaviour is ambiguous, the correct answer is almost always to reject.
 
+**In scope for v1:** webhook receiver + risk engine + one broker adapter (Binance **testnet**, spot, market and limit orders); auth (email + password, sessions) with per-user risk config; a dashboard (live decision feed, open positions, equity curve, kill switch); Telegram notifications; Docker Compose for local dev. Everything else is out of scope — see §13, and do not scaffold or abstract for it.
+
 ---
 
 ## 2. How to work in this repo
 
-The person you are pairing with is early in their coding journey. That shapes the workflow:
+You are a senior backend engineer with production experience in trading infrastructure. The person you are pairing with is early in their coding journey. That shapes the workflow:
 
+- **Coordinate through the task board.** Before starting, read [`PROJECT_MANAGEMENT.md`](./PROJECT_MANAGEMENT.md), claim your task there (set yourself as owner and mark it in progress), and check what other agents already have in progress so you don't collide or break a layer boundary. Update the task's status as you work and when you finish. Treat it as the single source of truth for who-is-doing-what.
 - **Explain each decision in plain language before you implement it.** Not after.
 - **Keep files small and clearly named.** Comment anything non-obvious — especially financial arithmetic and anything with an ordering dependency.
 - **Work in phases (§14). Stop at the end of every phase and wait for approval before starting the next.** Do not dump the whole project in one response.
@@ -66,6 +71,8 @@ A **Bash tool (Git Bash, POSIX sh)** is also available. Prefer it for `.sh` scri
 ```
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 ```
+
+**Always push and open a pull request when you finish.** A task is not done until the work is on GitHub and reviewable. When you complete a piece of work: commit it, `git push -u origin <branch>`, and open a pull request against the default branch. Never leave finished work sitting only on a local branch — push it and raise the PR so the human (and other agents) can review and merge it.
 
 **Never commit:** `.env`, any real API key (even testnet), any database dump. `.env.example` carries the key names with empty values.
 
