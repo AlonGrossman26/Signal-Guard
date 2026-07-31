@@ -75,7 +75,13 @@ Surfaced while working through the spec. Flagged, not guessed — see plan §4.
 ## Task board
 
 Seeded from the phases in `CLAUDE.md` §14. Add rows as work is broken down further; give
-each a unique ID. **Current phase: 0 — Plan (delivered, awaiting human sign-off).**
+each a unique ID. **Current phase: 1 — Skeleton (delivered, awaiting human sign-off).**
+
+> **Note on the open questions.** The human replied "can you program it" without answering Q1–Q5 or
+> OQ-1…OQ-6. Those answers are therefore recorded as **adopted by default** — the agent's own
+> recommendations, used as the working decisions so Phase 1 could proceed. Phase 1 barely depends on
+> them; **Phase 2 does.** OQ-2 (rule-1 ordering), OQ-3 (the sizing formula) and OQ-6 (`sell` on spot)
+> all change risk-engine behaviour and should be confirmed before P2-1 starts.
 
 ### Phase 0 — Plan (no code)
 
@@ -89,18 +95,18 @@ each a unique ID. **Current phase: 0 — Plan (delivered, awaiting human sign-of
 
 | ID | Task | Layer | Owner | Status | Depends on | Notes |
 |---|---|---|---|---|---|---|
-| P1-1 | Docker Compose: Postgres, Redis, API | infra | _unclaimed_ | BACKLOG | P0-2 | `docker compose up` works. |
-| P1-2 | FastAPI app + `/health` endpoint | api | _unclaimed_ | BACKLOG | P1-1 | `/health` returns green. |
-| P1-3 | Alembic migrations + config loading + structured JSON logging with redaction | db/config | _unclaimed_ | BACKLOG | P0-3, P1-1 | Redaction denylist per §12. |
+| P1-1 | Docker Compose: Postgres, Redis, API | infra | claude-opus-5 (phase-1) | IN REVIEW | P0-2 | Compose + Dockerfile + `.gitattributes`/`.dockerignore`/`.env.example` written. **Not verified by the agent — no Docker daemon in the build session.** Human must run `docker compose up -d --build`. |
+| P1-2 | FastAPI app + `/health` endpoint | api | claude-opus-5 (phase-1) | IN REVIEW | P1-1 | `/health` checks Postgres + Redis and returns 503 when either is down (fail closed). Verified against a live Postgres + Redis. |
+| P1-3 | Alembic migrations + config loading + structured JSON logging with redaction | db/config | claude-opus-5 (phase-1) | IN REVIEW | P0-3, P1-1 | Full schema (13 tables) in one migration, incl. append-only triggers and partial unique indexes. Config fails closed on missing secrets; live-trading flag needs a confirmation phrase. |
 
 ### Phase 2 — Risk engine (pure)
 
 | ID | Task | Layer | Owner | Status | Depends on | Notes |
 |---|---|---|---|---|---|---|
-| P2-1 | Pure `risk/` package: decision types + the 10 rules in exact order (§7) | risk | _unclaimed_ | BACKLOG | P0-3 | **Zero I/O.** Time is passed in. |
-| P2-2 | Position-sizing transform (§7 rule 9) | risk | _unclaimed_ | BACKLOG | P2-1 | Round down; fee/slippage buffer first. |
-| P2-3 | Full test suite for §13 (per-rule tables, ordering, DST, restart, Hypothesis) | tests | _unclaimed_ | BACKLOG | P2-1, P2-2 | No test may touch a real network. |
-| P2-4 | Test asserting `risk/` imports no I/O libs (httpx/sqlalchemy/redis/datetime.now) | tests | _unclaimed_ | BACKLOG | P2-1 | Guards the most important design rule. |
+| P2-1 | Pure `risk/` package: decision types + the 10 rules in exact order (§7) | risk | claude-opus-5 (phase-2) | IN REVIEW | P0-3 | **Zero I/O.** Time is passed in. |
+| P2-2 | Position-sizing transform (§7 rule 9) | risk | claude-opus-5 (phase-2) | IN REVIEW | P2-1 | Closed-form buffer per OQ-3; round down. |
+| P2-3 | Full test suite for §13 (per-rule tables, ordering, DST, restart, Hypothesis) | tests | claude-opus-5 (phase-2) | IN REVIEW | P2-1, P2-2 | No test touches a network. |
+| P2-4 | Test asserting `risk/` imports no I/O libs (httpx/sqlalchemy/redis/datetime.now) | tests | claude-opus-5 (phase-2) | IN REVIEW | P2-1 | Guards the most important design rule. |
 
 ### Phase 3 — Ingress
 
@@ -149,3 +155,8 @@ Append a line whenever a task changes status, so the history of who-did-what is 
 | 2026-07-31 | P0-2 | File tree proposed (plan §5). → `IN REVIEW`. | claude-opus-5 (phase-0) |
 | 2026-07-31 | P0-3 | Exact columns proposed for all 9 §6 tables + 4 justified additions (plan §6). → `IN REVIEW`. | claude-opus-5 (phase-0) |
 | 2026-07-31 | OQ-1…OQ-6 | Six new blocking open questions raised rather than guessed. Phase 1 and 2 stay `BACKLOG` until answered. | claude-opus-5 (phase-0) |
+| 2026-07-31 | Q1–Q5, OQ-1…OQ-6 | Human said "program it" without answering. Recommendations **adopted by default** to unblock Phase 1; OQ-2/OQ-3/OQ-6 still need confirmation before P2-1. | claude-opus-5 (phase-1) |
+| 2026-07-31 | P1-1, P1-2, P1-3 | Claimed → `IN PROGRESS`. | claude-opus-5 (phase-1) |
+| 2026-07-31 | P1-3 | Full schema (13 tables), append-only triggers, partial unique indexes, config fail-closed, JSON logging + redaction. 59 tests pass; ruff and mypy --strict clean. → `IN REVIEW`. | claude-opus-5 (phase-1) |
+| 2026-07-31 | P1-2 | `/health` (deps, 503 when degraded) and `/health/live` (no deps). Verified green against live Postgres + Redis, and 503 with Redis stopped. → `IN REVIEW`. | claude-opus-5 (phase-1) |
+| 2026-07-31 | P1-1 | Compose, Dockerfile, `.gitattributes`, `.env.example`, README quickstart. **Compose itself unverified** — no Docker daemon in the build session. → `IN REVIEW`. | claude-opus-5 (phase-1) |

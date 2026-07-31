@@ -311,7 +311,7 @@ Billing / subscription tiers / quotas · multiple brokers (design the interface,
 | **5 — Dashboard** | Next.js frontend, WebSocket feed, all four pages, kill switch | Kill switch flattens testnet |
 | **6 — Ops** | Telegram notifications, deploy docs, 3am runbook | `docs/runbook.md` |
 
-**Current phase: 0 — not started.**
+**Current phase: 1 — Skeleton delivered, awaiting sign-off. Phase 2 not started.**
 
 ---
 
