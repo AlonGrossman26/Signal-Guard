@@ -103,10 +103,10 @@ each a unique ID. **Current phase: 1 — Skeleton (delivered, awaiting human sig
 
 | ID | Task | Layer | Owner | Status | Depends on | Notes |
 |---|---|---|---|---|---|---|
-| P2-1 | Pure `risk/` package: decision types + the 10 rules in exact order (§7) | risk | _unclaimed_ | BACKLOG | P0-3 | **Zero I/O.** Time is passed in. |
-| P2-2 | Position-sizing transform (§7 rule 9) | risk | _unclaimed_ | BACKLOG | P2-1 | Round down; fee/slippage buffer first. |
-| P2-3 | Full test suite for §13 (per-rule tables, ordering, DST, restart, Hypothesis) | tests | _unclaimed_ | BACKLOG | P2-1, P2-2 | No test may touch a real network. |
-| P2-4 | Test asserting `risk/` imports no I/O libs (httpx/sqlalchemy/redis/datetime.now) | tests | _unclaimed_ | BACKLOG | P2-1 | Guards the most important design rule. |
+| P2-1 | Pure `risk/` package: decision types + the 10 rules in exact order (§7) | risk | claude-opus-5 (phase-2) | IN REVIEW | P0-3 | **Zero I/O.** Time is passed in. |
+| P2-2 | Position-sizing transform (§7 rule 9) | risk | claude-opus-5 (phase-2) | IN REVIEW | P2-1 | Closed-form buffer per OQ-3; round down. |
+| P2-3 | Full test suite for §13 (per-rule tables, ordering, DST, restart, Hypothesis) | tests | claude-opus-5 (phase-2) | IN REVIEW | P2-1, P2-2 | No test touches a network. |
+| P2-4 | Test asserting `risk/` imports no I/O libs (httpx/sqlalchemy/redis/datetime.now) | tests | claude-opus-5 (phase-2) | IN REVIEW | P2-1 | Guards the most important design rule. |
 
 ### Phase 3 — Ingress
 

@@ -363,3 +363,58 @@ async def test_decimal_round_trips_without_precision_loss(
     assert isinstance(stored, Decimal)
     assert stored == exact
     assert str(stored) == "0.089285714285714285"
+
+
+# --- Idempotency under genuine concurrency (CLAUDE.md §13) --------------------
+
+
+async def test_five_concurrent_decisions_for_one_alert_yield_exactly_one() -> None:
+    """The same alert processed 5x at once must produce exactly 1 decision.
+
+    Real concurrency, not simulated: five independent connections race to insert
+    a decision for the same alert. The partial unique index lets exactly one win
+    and forces the other four to fail.
+
+    This is the foundation of constraint #4. Application-level "check then
+    insert" cannot provide it — between the check and the insert, another worker
+    can slip through. Only the database can decide a race.
+
+    The full pipeline version of this test (one alert -> one *order*) arrives in
+    Phase 3, once ingress exists.
+    """
+    if not DATABASE_URL:
+        pytest.skip("DATABASE_URL not set")
+
+    import asyncio
+
+    engine = create_async_engine(DATABASE_URL, poolclass=None)
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+
+    async with maker() as setup:
+        user_id = await _make_user(setup)
+        endpoint_id = await _make_endpoint(setup, user_id)
+        alert_id = await _make_alert(setup, user_id, endpoint_id)
+        await setup.commit()
+
+    async def attempt() -> bool:
+        """Try to write the decision. True if this worker won the race."""
+        async with maker() as s:
+            try:
+                await _insert_decision(s, alert_id)
+                await s.commit()
+                return True
+            except IntegrityError:
+                await s.rollback()
+                return False
+
+    results = await asyncio.gather(*(attempt() for _ in range(5)))
+
+    async with maker() as check:
+        count = await check.execute(
+            text("SELECT count(*) FROM decisions WHERE alert_id = :id"),
+            {"id": alert_id},
+        )
+        assert count.scalar_one() == 1
+
+    await engine.dispose()
+    assert sum(results) == 1, f"expected exactly one winner, got {sum(results)}"
