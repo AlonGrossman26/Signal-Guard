@@ -1,0 +1,40 @@
+# Pre-commit hooks — the local safety net before code reaches main.
+#
+# Agents commit straight to main with no PR review gate (CLAUDE.md §4), so
+# these run the SAME ruff + mypy the CI runs (OPS-2) plus a few hygiene
+# checks — a lint or type error is caught here, before the push, instead of
+# by a red CI run afterward. The ruff/mypy hooks are `local` and shell out to
+# `uv run ...` inside backend/ so they stay byte-for-byte identical to CI and
+# to the commands in CLAUDE.md §4.
+#
+# One-time setup (from the repo root):  uv tool install pre-commit  &&  pre-commit install
+minimum_pre_commit_version: "3.5.0"
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: '\.md$' # Markdown uses trailing spaces as hard line breaks (.editorconfig).
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+      - id: mixed-line-ending
+        args: [--fix=lf] # Enforce LF to match .gitattributes / .editorconfig.
+
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff (lint, backend)
+        entry: bash -c 'cd backend && uv run ruff check .'
+        language: system
+        types: [python]
+        pass_filenames: false
+      - id: mypy
+        name: mypy --strict (backend/src)
+        entry: bash -c 'cd backend && uv run mypy src'
+        language: system
+        types: [python]
+        pass_filenames: false
