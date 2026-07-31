@@ -75,6 +75,13 @@ A **Bash tool (Git Bash, POSIX sh)** is also available. Prefer it for `.sh` scri
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 ```
 
+**Sharing `main` with other agents — never clobber each other.** Because everyone commits to the same branch, several agents may be committing at once. Follow this every time so two agents' work never collides:
+
+1. **Before you start:** run `git pull --rebase origin main` so you begin from the latest state, then **claim your task on the board** (§2). Claiming is what stops two agents editing the same files — check what others own and stay out of it.
+2. **Stay in your lane.** Touch only the files your task owns, respecting the layer boundaries (§5). Two agents editing different files never conflict.
+3. **Re-check before you push — this is the end check.** When your work is ready, `git pull --rebase origin main` again to fold in anything that landed while you worked, re-run the tests and linter, and resolve any conflict locally. Only then push. If the push is rejected because another agent pushed first, rebase again and retry — **never force-push** `main`.
+4. **Commit small, push often.** The shorter the time between pulling and pushing, the smaller the window for a conflict. Don't sit on a large uncommitted change.
+
 **Never commit:** `.env`, any real API key (even testnet), any database dump. `.env.example` carries the key names with empty values.
 
 ### Intended commands

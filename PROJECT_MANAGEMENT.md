@@ -11,7 +11,8 @@ If `CLAUDE.md` is the *rules* of the project, this file is the *state* of the pr
 
 ## How to use this board (the protocol)
 
-1. **Before starting any work, read the whole board.** See what is `IN PROGRESS` and
+1. **Before starting any work, read the whole board** and `git pull --rebase origin main`
+   so you start from the latest state (`CLAUDE.md` §4). See what is `IN PROGRESS` and
    who owns it. Do not pick up a task someone else already owns, and do not start work
    that touches the same files as another agent's in-progress task without coordinating
    first (leave a note in that task's Notes column).
@@ -29,9 +30,12 @@ If `CLAUDE.md` is the *rules* of the project, this file is the *state* of the pr
 4. **Respect phase order and dependencies.** Don't start a task whose `Depends on` isn't
    `DONE`. Phases are sequential (`CLAUDE.md` §14) — finish and get sign-off on one
    before opening the next.
-5. **Keep the board honest.** Update **Status** as you progress. When you finish, commit
-   and push your work **straight to `main`** (`CLAUDE.md` §4 — no branches, no PRs) and
-   set the task to `DONE` yourself. The one exception is **phase-ending work**: mark it
+5. **Keep the board honest.** Update **Status** as you progress. When you finish, first
+   **`git pull --rebase origin main` again, re-run the checks, and resolve any conflict
+   locally** (the end check — `CLAUDE.md` §4) so you never clobber another agent who
+   pushed while you worked; never force-push. Then push your work **straight to `main`**
+   (no branches, no PRs) and set the task to `DONE` yourself. The one exception is
+   **phase-ending work**: mark it
    `IN REVIEW` instead, because `CLAUDE.md` §14 still requires the human to approve before
    the next phase begins. Either way, leave a short handoff in **Notes**: what changed,
    what's not yet handled, what the next agent needs. Partial work is never marked done.
