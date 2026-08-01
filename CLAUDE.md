@@ -319,7 +319,7 @@ Billing / subscription tiers / quotas · multiple brokers (design the interface,
 | **5 — Dashboard** | Next.js frontend, WebSocket feed, all four pages, kill switch | Kill switch flattens testnet |
 | **6 — Ops** | Telegram notifications, deploy docs, 3am runbook | `docs/runbook.md` |
 
-**Current phase: 1 — Skeleton delivered, awaiting sign-off. Phase 2 not started.**
+**Current phase: 8 — Wiring.** Phases 0–7 are built and green (367 backend tests, `ruff`, `mypy --strict`, frontend `tsc` + `build`), but the 2026-08-01 audit found the layers were never joined: `ingress/` still runs on a placeholder broker and never calls `execution/`, so an approved decision submits no order. Phase 8 closes that. See [`PROJECT_MANAGEMENT.md`](./PROJECT_MANAGEMENT.md) — it is the authority on task status; this line is a pointer, not a second source of truth.
 
 ---
 
