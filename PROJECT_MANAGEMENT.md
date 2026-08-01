@@ -90,7 +90,12 @@ Surfaced while working through the spec. Flagged, not guessed — see plan §4.
 ## Task board
 
 Seeded from the phases in `CLAUDE.md` §14. Add rows as work is broken down further; give
-each a unique ID. **Current phase: 1 — Skeleton (delivered, awaiting human sign-off).**
+each a unique ID. **Status: Phases 1–6 all have code delivered and green against live
+Postgres + Redis; every task is `IN REVIEW`/`DONE` awaiting the human's phase sign-off.**
+Phase 5/6 (P5-1/2/3, P6-1/2) were built on branch `claude/task-booking-completion-o2trly`
+(this session is branch-scoped, not `main`). The Phase 3/4 rows still read `BACKLOG` but
+their code is merged and passing — see the reconciliation note in the changelog; the human
+should confirm their real status.
 
 > **Note on the open questions.** The human replied "can you program it" without answering Q1–Q5 or
 > OQ-1…OQ-6. Those answers are therefore recorded as **adopted by default** — the agent's own
@@ -147,7 +152,7 @@ each a unique ID. **Current phase: 1 — Skeleton (delivered, awaiting human sig
 |---|---|---|---|---|---|---|
 | P5-1 | REST API: profiles, broker accounts, decisions, orders, positions, equity, kill switch | api | claude (phase-5) | IN REVIEW | P4-x | Full `api/` package under `/api`: session auth (Argon2id, revocable server-side sessions), risk-profile GET/PUT (partial, version-bump, money-as-string, tz validated), broker-account + webhook-endpoint CRUD (credentials write-only), decisions (reason-code filter + pagination) / orders / positions / equity read models, kill switch + unlock (reuses tested `execution.killswitch`). 40 new integration tests; whole suite 326 green vs live PG+Redis; ruff + mypy `--strict` clean. **Not yet handled:** live-broker sweep in the kill endpoint (needs the broker-credential→adapter path the execution runtime owns; the reconciler enforces flatten on LOCKED meanwhile), and refusing an exchange key with withdrawal permission (§12, needs a live exchange call). On branch `claude/task-booking-completion-o2trly`, not `main`. |
 | P5-2 | WebSocket `/ws` fed by Redis pub/sub | api | claude (phase-5) | IN REVIEW | P5-1 | Shared `realtime.py` publisher (per-user channel, money-as-strings, fail-soft), authenticated `/ws` endpoint (cookie auth, `connected`/`heartbeat` frames, read-only fan-out, per-user isolation). Decisions wired end-to-end through ingress; orders/positions/equity via an optional `event_sink` in the reconciler (off by default). 13 tests incl. real-Redis round-trip, live-webhook→event e2e, WS scoping, reconciler emission. Suite 335 green; ruff + mypy `--strict` clean. Branch `claude/task-booking-completion-o2trly`. |
-| P5-3 | Next.js frontend — Live, Risk profile, History, Setup pages | frontend | claude (phase-5) | RESERVED | P5-1, P5-2 | Kill-switch button with confirm step. |
+| P5-3 | Next.js frontend — Live, Risk profile, History, Setup pages | frontend | claude (phase-5) | IN REVIEW | P5-1, P5-2 | Next.js 14 (App Router) + TS + Tailwind + Lightweight Charts. Login/register; `Shell` auth-guard + nav. **Live** (WS-fed decision feed colour-coded by verdict + REST backfill, positions, per-account kill switch with two-step confirm + unlock); **Risk profile** (§7 form + live sizing preview using the OQ-3 closed form, version bump on save); **History** (equity curve via Lightweight Charts + decisions-by-reason-code); **Setup** (broker account create, webhook endpoint mint with token/secrets shown once, TradingView template, test-signal button hitting `/test`). Typed API client (`credentials: include`), auto-reconnecting `useWebSocket`. `npm run build` + `tsc --noEmit` both clean on patched next 14.2.35. Backend: added credentialed CORS (`CORS_ALLOW_ORIGINS`, default `:3000`). |
 
 ### Phase 6 — Ops
 
@@ -204,3 +209,4 @@ Append a line whenever a task changes status, so the history of who-did-what is 
 | 2026-08-01 | P5-2 | Realtime publisher + `/ws` endpoint; decision fan-out wired through ingress, orders/positions/equity via optional reconciler sink. 13 tests; suite 335 green; ruff + mypy `--strict` clean. → `IN REVIEW`. | claude (phase-5) |
 | 2026-08-01 | P6-1 | `notify/` Telegram client + fail-soft Notifier; wired into the kill switch. 14 pure tests (MockTransport). Suite 349 green; ruff + mypy `--strict` clean. → `IN REVIEW`. | claude (phase-5) |
 | 2026-08-01 | P6-2 | `docs/runbook.md` (3am runbook) + `docs/deploy.md`; commands/endpoints verified against code. → `IN REVIEW`. | claude (phase-5) |
+| 2026-08-01 | P5-3 | Next.js dashboard (Live/Risk/History/Setup + login), typed API client, auto-reconnecting WS hook, kill switch with confirm. Backend CORS added. `npm run build` + `tsc` clean; backend suite 349 green. → `IN REVIEW`. All Phase 5/6 tasks now delivered on branch `claude/task-booking-completion-o2trly`, awaiting human sign-off. | claude (phase-5) |

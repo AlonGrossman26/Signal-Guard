@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from signalguard import __version__
 from signalguard.api.health import router as health_router
@@ -91,6 +92,18 @@ def create_app() -> FastAPI:
         docs_url="/docs" if settings.app_env == "local" else None,
         redoc_url=None,
         openapi_url="/openapi.json" if settings.app_env == "local" else None,
+    )
+
+    # The dashboard calls the API cross-origin in dev (Next.js on :3000) with a
+    # session cookie, so credentialed CORS is required. allow_credentials with a
+    # concrete origin list — never "*", which browsers reject for credentialed
+    # requests and which would be unsafe for a money-moving app anyway.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.cors_allow_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
     )
 
     app.include_router(health_router)

@@ -54,6 +54,13 @@ class Settings(BaseSettings):
     app_env: Literal["local", "test", "staging", "production"] = "local"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
 
+    # Origins allowed to call the API with credentials (the dashboard). Defaults
+    # to the Next.js dev server. In production the frontend is served same-origin
+    # behind a reverse proxy, so this list is narrow on purpose — a permissive
+    # "*" is incompatible with credentialed requests anyway, and would be a
+    # cross-site risk for an app that can move money.
+    cors_allow_origins: list[str] = ["http://localhost:3000"]
+
     # Connection strings. Inside Docker these use compose service names (`db`,
     # `redis`), never localhost — see .env.example.
     database_url: str = Field(min_length=1)
