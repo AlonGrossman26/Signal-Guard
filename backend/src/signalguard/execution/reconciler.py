@@ -20,6 +20,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,6 +36,7 @@ from signalguard.execution.base import (
     BrokerError,
     BrokerPosition,
 )
+from signalguard.realtime import EventType, publish
 from signalguard.risk.session import session_date_for
 
 logger = logging.getLogger(__name__)
@@ -45,6 +47,11 @@ DEFAULT_INTERVAL_SEC = 15
 # a throwaway session in tests without reaching for a network or a real account.
 SessionFactory = Callable[[], AsyncIterator[AsyncSession]]
 BrokerFactory = Callable[[BrokerAccount], Awaitable[BrokerAdapter]]
+
+# A bound sink that fans a reconciled change out to one user's dashboard feed.
+# Optional everywhere: when absent, reconciliation is exactly as before, and the
+# durable tables are still the source of truth (constraint #5).
+EventSink = Callable[[EventType, dict[str, Any]], Awaitable[None]]
 
 # Statuses that may still change at the exchange, so they are worth asking about.
 _OPEN_STATUSES = (
@@ -68,8 +75,16 @@ async def reconcile_account(
     broker: BrokerAdapter,
     account: BrokerAccount,
     now: datetime,
+    *,
+    event_sink: EventSink | None = None,
 ) -> ReconcileReport:
-    """Pull broker truth and repair local state for one account."""
+    """Pull broker truth and repair local state for one account.
+
+    When `event_sink` is supplied, every repaired order, synced position and
+    equity tick is also fanned out to the dashboard's live feed. It is optional
+    so the loop, and every existing test, can run without a Redis publisher —
+    the persisted rows are the record; the events are a live convenience on top.
+    """
     report = ReconcileReport()
 
     # --- Orders ---------------------------------------------------------------
@@ -93,6 +108,7 @@ async def reconcile_account(
                 row.status = OrderStatus.REJECTED.value
                 row.last_error = "not found at broker"
                 report.orders_repaired += 1
+                await _emit_order(event_sink, account, row)
             else:
                 report.errors.append(f"order:{exc.code.value}")
             continue
@@ -110,6 +126,7 @@ async def reconcile_account(
             if truth.status is OrderStatus.FILLED:
                 row.filled_at = truth.updated_at or now
             report.orders_repaired += 1
+            await _emit_order(event_sink, account, row)
 
     # --- Positions and equity -------------------------------------------------
     try:
@@ -121,9 +138,32 @@ async def reconcile_account(
 
     await _sync_positions(session, account.id, state.positions)
     report.positions_synced = len(state.positions)
+    if event_sink is not None:
+        for position in state.positions:
+            await event_sink(
+                EventType.POSITION,
+                {
+                    "symbol": position.symbol,
+                    "qty": position.qty,
+                    "avg_entry": position.avg_entry,
+                    "mark_price": position.mark_price,
+                    "unrealized_pnl": (position.mark_price - position.avg_entry)
+                    * position.qty,
+                },
+            )
 
     await _record_equity(session, account, state.total_equity, state.free_balance,
                          state.position_value, now)
+    if event_sink is not None:
+        await event_sink(
+            EventType.EQUITY,
+            {
+                "equity": state.total_equity,
+                "free_balance": state.free_balance,
+                "position_value": state.position_value,
+                "taken_at": now,
+            },
+        )
 
     # --- Enforce the lock -----------------------------------------------------
     if account.trading_state == TradingState.LOCKED.value:
@@ -137,6 +177,28 @@ async def reconcile_account(
 
     await session.flush()
     return report
+
+
+async def _emit_order(
+    event_sink: EventSink | None, account: BrokerAccount, row: OrderRow
+) -> None:
+    """Fan a repaired order's new state out to the dashboard, if a sink is set."""
+    if event_sink is None:
+        return
+    await event_sink(
+        EventType.ORDER,
+        {
+            "order_id": row.id,
+            "symbol": row.symbol,
+            "side": row.side,
+            "type": row.type,
+            "role": row.role,
+            "status": row.status,
+            "qty": row.qty,
+            "filled_qty": row.filled_qty,
+            "avg_fill_price": row.avg_fill_price,
+        },
+    )
 
 
 async def _sync_positions(
@@ -250,18 +312,33 @@ async def _enforce_lock(broker: BrokerAdapter, state: BrokerAccountState) -> int
         return 0
 
 
+def _sink_for(redis: Any, account: BrokerAccount) -> EventSink:
+    """Bind a publisher to one account's owner, ready to hand to reconcile."""
+    user_id = account.user_id
+
+    async def sink(event_type: EventType, data: dict[str, Any]) -> None:
+        await publish(redis, user_id, event_type, data)
+
+    return sink
+
+
 async def reconciliation_loop(
     session_factory: SessionFactory,
     broker_factory: BrokerFactory,
     interval_sec: int = DEFAULT_INTERVAL_SEC,
     *,
     stop_event: asyncio.Event | None = None,
+    redis: Any | None = None,
 ) -> None:
     """Reconcile every active account, forever.
 
     Failures are logged and the loop continues. A reconciler that dies on the
     first error is worse than none at all: it stops repairing state precisely
     when state is most likely to be wrong.
+
+    When `redis` is supplied, each account's repaired orders, positions and
+    equity are published to that account owner's dashboard channel. Without it
+    the loop reconciles silently, exactly as before.
     """
     while stop_event is None or not stop_event.is_set():
         try:
@@ -271,7 +348,10 @@ async def reconciliation_loop(
                 )
                 for account in accounts.scalars():
                     broker = await broker_factory(account)
-                    await reconcile_account(session, broker, account, datetime.now(UTC))
+                    sink = _sink_for(redis, account) if redis is not None else None
+                    await reconcile_account(
+                        session, broker, account, datetime.now(UTC), event_sink=sink
+                    )
                 await session.commit()
         except Exception:
             logger.exception("Reconciliation cycle failed; continuing")

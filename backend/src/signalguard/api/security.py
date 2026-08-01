@@ -21,6 +21,7 @@ Design decisions that matter:
 
 from __future__ import annotations
 
+import ipaddress
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
@@ -36,6 +37,22 @@ from signalguard.db.models import User
 from signalguard.db.session import get_session
 
 SESSION_COOKIE_NAME = "sg_session"
+
+
+def _client_ip(request: Request) -> str | None:
+    """Return the client IP only if it is a real address.
+
+    The `sessions.ip` column is Postgres `INET`, so a non-address host — a test
+    client's "testclient", or a hostname a proxy might pass — must be dropped
+    rather than handed to the database, which would reject the whole insert.
+    """
+    if request.client is None:
+        return None
+    try:
+        ipaddress.ip_address(request.client.host)
+    except ValueError:
+        return None
+    return request.client.host
 
 # How long a login lasts before it must be re-established. Long enough not to
 # nag a working trader, short enough that an abandoned session does not live
@@ -65,7 +82,7 @@ async def create_session(
             token_hash=hash_session_token(token),
             expires_at=now + SESSION_TTL,
             user_agent=request.headers.get("user-agent"),
-            ip=request.client.host if request.client else None,
+            ip=_client_ip(request),
         )
     )
     await session.flush()
@@ -93,38 +110,45 @@ async def revoke_session(session: AsyncSession, response: Response, token: str) 
     response.delete_cookie(SESSION_COOKIE_NAME, path="/")
 
 
-async def current_user(
-    session: Annotated[AsyncSession, Depends(get_session)],
-    sg_session: Annotated[str | None, Cookie(alias=SESSION_COOKIE_NAME)] = None,
-) -> User:
-    """Resolve the logged-in user, or 401.
+async def authenticate_token(session: AsyncSession, token: str | None) -> User | None:
+    """Resolve a session token to its user, or None.
 
-    Fail closed at every branch: no cookie, unknown token, revoked, expired, or a
-    deactivated user all resolve to "not authenticated". An ambiguous session is
-    never treated as a valid one.
+    Fail closed at every branch: no token, unknown token, revoked, expired, or a
+    deactivated user all resolve to None. Shared by the HTTP dependency and the
+    WebSocket handshake so both judge a session by exactly the same rules.
     """
-    unauthorized = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="not authenticated",
-        headers={"WWW-Authenticate": "cookie"},
-    )
-    if not sg_session:
-        raise unauthorized
+    if not token:
+        return None
 
     result = await session.execute(
         select(SessionModel).where(
-            SessionModel.token_hash == hash_session_token(sg_session)
+            SessionModel.token_hash == hash_session_token(token)
         )
     )
     login = result.scalar_one_or_none()
     now = datetime.now(UTC)
     if login is None or login.revoked_at is not None or login.expires_at <= now:
-        raise unauthorized
+        return None
 
     user_result = await session.execute(select(User).where(User.id == login.user_id))
     user = user_result.scalar_one_or_none()
     if user is None or not user.is_active:
-        raise unauthorized
+        return None
+    return user
+
+
+async def current_user(
+    session: Annotated[AsyncSession, Depends(get_session)],
+    sg_session: Annotated[str | None, Cookie(alias=SESSION_COOKIE_NAME)] = None,
+) -> User:
+    """Resolve the logged-in user, or 401. An ambiguous session is never valid."""
+    user = await authenticate_token(session, sg_session)
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="not authenticated",
+            headers={"WWW-Authenticate": "cookie"},
+        )
     return user
 
 

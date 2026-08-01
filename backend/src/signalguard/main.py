@@ -15,6 +15,7 @@ from signalguard.api.routes_auth import router as auth_router
 from signalguard.api.routes_feed import router as feed_router
 from signalguard.api.routes_killswitch import router as killswitch_router
 from signalguard.api.routes_profile import router as profile_router
+from signalguard.api.routes_ws import router as ws_router
 from signalguard.config import Settings, get_settings
 from signalguard.db.session import dispose_engine, init_engine
 from signalguard.ingress.routes import router as webhook_router
@@ -98,6 +99,7 @@ def create_app() -> FastAPI:
     app.include_router(accounts_router)
     app.include_router(feed_router)
     app.include_router(killswitch_router)
+    app.include_router(ws_router)
     return app
 
 

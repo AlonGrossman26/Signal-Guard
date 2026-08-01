@@ -23,6 +23,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from signalguard import realtime
 from signalguard.config import Settings, get_settings
 from signalguard.db.models import Alert
 from signalguard.db.session import get_session
@@ -35,7 +36,7 @@ from signalguard.ingress.auth import (
     authenticate,
     resolve_endpoint,
 )
-from signalguard.ingress.pipeline import evaluate_alert
+from signalguard.ingress.pipeline import PipelineResult, evaluate_alert
 from signalguard.ingress.ratelimit import RateLimiter
 from signalguard.ingress.schema import (
     MAX_BODY_BYTES,
@@ -329,7 +330,7 @@ async def _evaluate_in_background(
             alert = result.scalar_one_or_none()
             if alert is None:
                 return
-            await evaluate_alert(
+            evaluation = await evaluate_alert(
                 session,
                 alert=alert,
                 payload_data=payload_data,
@@ -340,5 +341,30 @@ async def _evaluate_in_background(
                 is_test=False,
             )
             await session.commit()
+            # Publish to the dashboard only after the decision is durable. A
+            # pub/sub failure here is swallowed (see realtime.publish): the row
+            # is committed, and the live feed is a convenience on top of it.
+            await _publish_decision(alert.user_id, alert.id, evaluation)
     except Exception:
         logger.exception("Background risk evaluation failed", extra={"alert_id": str(alert_id)})
+
+
+async def _publish_decision(
+    user_id: uuid.UUID, alert_id: uuid.UUID, evaluation: PipelineResult
+) -> None:
+    """Fan the freshly-made decision out to the user's live dashboard feed."""
+    decision = evaluation.decision
+    await realtime.publish(
+        get_redis(),
+        user_id,
+        realtime.EventType.DECISION,
+        {
+            "decision_id": evaluation.decision_id,
+            "alert_id": alert_id,
+            "verdict": decision.verdict,
+            "reason_code": decision.reason_code,
+            "reason_detail": decision.reason_detail,
+            "computed_qty": decision.computed_qty,
+            "latency_ms": evaluation.latency_ms,
+        },
+    )

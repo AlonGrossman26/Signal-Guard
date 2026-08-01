@@ -146,15 +146,15 @@ each a unique ID. **Current phase: 1 — Skeleton (delivered, awaiting human sig
 | ID | Task | Layer | Owner | Status | Depends on | Notes |
 |---|---|---|---|---|---|---|
 | P5-1 | REST API: profiles, broker accounts, decisions, orders, positions, equity, kill switch | api | claude (phase-5) | IN REVIEW | P4-x | Full `api/` package under `/api`: session auth (Argon2id, revocable server-side sessions), risk-profile GET/PUT (partial, version-bump, money-as-string, tz validated), broker-account + webhook-endpoint CRUD (credentials write-only), decisions (reason-code filter + pagination) / orders / positions / equity read models, kill switch + unlock (reuses tested `execution.killswitch`). 40 new integration tests; whole suite 326 green vs live PG+Redis; ruff + mypy `--strict` clean. **Not yet handled:** live-broker sweep in the kill endpoint (needs the broker-credential→adapter path the execution runtime owns; the reconciler enforces flatten on LOCKED meanwhile), and refusing an exchange key with withdrawal permission (§12, needs a live exchange call). On branch `claude/task-booking-completion-o2trly`, not `main`. |
-| P5-2 | WebSocket `/ws` fed by Redis pub/sub | api | _unclaimed_ | BACKLOG | P5-1 | Decisions, orders, positions, equity. |
-| P5-3 | Next.js frontend — Live, Risk profile, History, Setup pages | frontend | _unclaimed_ | BACKLOG | P5-1, P5-2 | Kill-switch button with confirm step. |
+| P5-2 | WebSocket `/ws` fed by Redis pub/sub | api | claude (phase-5) | IN REVIEW | P5-1 | Shared `realtime.py` publisher (per-user channel, money-as-strings, fail-soft), authenticated `/ws` endpoint (cookie auth, `connected`/`heartbeat` frames, read-only fan-out, per-user isolation). Decisions wired end-to-end through ingress; orders/positions/equity via an optional `event_sink` in the reconciler (off by default). 13 tests incl. real-Redis round-trip, live-webhook→event e2e, WS scoping, reconciler emission. Suite 335 green; ruff + mypy `--strict` clean. Branch `claude/task-booking-completion-o2trly`. |
+| P5-3 | Next.js frontend — Live, Risk profile, History, Setup pages | frontend | claude (phase-5) | RESERVED | P5-1, P5-2 | Kill-switch button with confirm step. |
 
 ### Phase 6 — Ops
 
 | ID | Task | Layer | Owner | Status | Depends on | Notes |
 |---|---|---|---|---|---|---|
-| P6-1 | Telegram notifications | notify | _unclaimed_ | BACKLOG | P4-4 | — |
-| P6-2 | Deploy docs + `docs/runbook.md` (the 3am runbook) | docs | _unclaimed_ | BACKLOG | P5-3 | — |
+| P6-1 | Telegram notifications | notify | claude (phase-5) | RESERVED | P4-4 | — |
+| P6-2 | Deploy docs + `docs/runbook.md` (the 3am runbook) | docs | claude (phase-5) | RESERVED | P5-3 | — |
 
 ### Cross-cutting — Ops & tooling
 
@@ -200,3 +200,5 @@ Append a line whenever a task changes status, so the history of who-did-what is 
 | 2026-07-31 | P5-1 | Booked → `IN PROGRESS`. Building the dashboard REST API (auth+sessions, risk-profile CRUD, broker-account+webhook CRUD, decisions/orders/positions/equity read models, kill switch). | claude (phase-5) |
 | 2026-07-31 | P5-1 | Delivered the `api/` package (7 route modules + schemas + session security) and 40 integration tests. Full suite 326 pass vs live Postgres+Redis; ruff + mypy `--strict` clean. → `IN REVIEW`. Pushed to `claude/task-booking-completion-o2trly` (this session is branch-scoped, not `main`). | claude (phase-5) |
 | 2026-07-31 | P3-x, P4-x | **Board/reality reconciliation (flag, not a claim of completion):** the Phase 3 (`0946bb6`) and Phase 4 (`595224f`) code is already merged and its tests pass against live PG+Redis, yet those rows still read `BACKLOG`. Left as-is pending the human — noting the discrepancy here so the board and codebase stop silently disagreeing. Human to confirm their real status. | claude (phase-5) |
+| 2026-08-01 | P5-2, P5-3, P6-1, P6-2 | Booked the remaining Phase 5/6 work: P5-2 → `IN PROGRESS`; P5-3, P6-1, P6-2 pre-booked → `RESERVED`. | claude (phase-5) |
+| 2026-08-01 | P5-2 | Realtime publisher + `/ws` endpoint; decision fan-out wired through ingress, orders/positions/equity via optional reconciler sink. 13 tests; suite 335 green; ruff + mypy `--strict` clean. → `IN REVIEW`. | claude (phase-5) |
