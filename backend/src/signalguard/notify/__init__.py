@@ -8,7 +8,17 @@ is best-effort — failures are logged and swallowed, exactly like the realtime
 pub/sub fan-out.
 """
 
-from signalguard.notify.notifier import Notifier, notifier_from_settings
+from signalguard.notify.notifier import (
+    Notifier,
+    notifier_for_user,
+    notifier_from_settings,
+)
 from signalguard.notify.telegram import TelegramClient, TelegramError
 
-__all__ = ["Notifier", "TelegramClient", "TelegramError", "notifier_from_settings"]
+__all__ = [
+    "Notifier",
+    "TelegramClient",
+    "TelegramError",
+    "notifier_for_user",
+    "notifier_from_settings",
+]

@@ -217,6 +217,34 @@ class WebhookEndpointCreated(WebhookEndpointResponse):
     body_secret: str
 
 
+# --- Notifications ------------------------------------------------------------
+
+
+class NotificationSettingsUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # A Telegram chat id: an integer, or the "-100…" form for channels/groups.
+    # Empty string or null clears it (fall back to the app-level chat, if any).
+    telegram_chat_id: str | None = Field(default=None, max_length=64)
+
+    @field_validator("telegram_chat_id")
+    @classmethod
+    def _normalise(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        chat = value.strip()
+        if chat == "":
+            return None
+        # Chat ids are numeric (optionally negative for groups/channels).
+        if not (chat.lstrip("-").isdigit()):
+            raise ValueError("telegram_chat_id must be a numeric Telegram chat id")
+        return chat
+
+
+class NotificationSettingsResponse(BaseModel):
+    telegram_chat_id: str | None
+
+
 # --- Read models: decisions, orders, positions, equity ------------------------
 
 

@@ -3,7 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import Shell from "@/components/Shell";
 import { API_BASE, api } from "@/lib/api";
-import type { BrokerAccount, WebhookEndpointCreated } from "@/lib/types";
+import type {
+  BrokerAccount,
+  NotificationSettings,
+  WebhookEndpointCreated,
+} from "@/lib/types";
 
 export default function SetupPage() {
   const [accounts, setAccounts] = useState<BrokerAccount[]>([]);
@@ -117,8 +121,67 @@ export default function SetupPage() {
         {created && <CreatedEndpoint created={created} />}
       </section>
 
+      <NotificationsSection />
+
       {error && <p className="mt-4 text-sm text-reject">{error}</p>}
     </Shell>
+  );
+}
+
+function NotificationsSection() {
+  const [chatId, setChatId] = useState("");
+  const [saved, setSaved] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .get<NotificationSettings>("/api/notifications")
+      .then((s) => setChatId(s.telegram_chat_id ?? ""))
+      .catch(() => undefined);
+  }, []);
+
+  const save = async () => {
+    setErr(null);
+    setSaved(null);
+    try {
+      const s = await api.put<NotificationSettings>("/api/notifications", {
+        telegram_chat_id: chatId.trim() === "" ? null : chatId.trim(),
+      });
+      setChatId(s.telegram_chat_id ?? "");
+      setSaved("Saved.");
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "failed");
+    }
+  };
+
+  return (
+    <section className="mt-8">
+      <h2 className="mb-2 text-sm font-semibold uppercase text-neutral-500">
+        Telegram notifications
+      </h2>
+      <div className="rounded border border-neutral-800 bg-neutral-900 p-4">
+        <p className="mb-3 text-sm text-neutral-400">
+          Start the SignalGuard bot in Telegram, then paste your numeric chat id here
+          to route kill-switch and risk alerts to your chat. Leave blank to disable.
+        </p>
+        <div className="flex gap-2">
+          <input
+            value={chatId}
+            onChange={(e) => setChatId(e.target.value)}
+            placeholder="e.g. 123456789"
+            className="flex-1 rounded border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm"
+          />
+          <button
+            onClick={save}
+            className="rounded bg-white px-4 py-2 text-sm font-medium text-neutral-950 hover:bg-neutral-200"
+          >
+            Save
+          </button>
+        </div>
+        {saved && <p className="mt-2 text-sm text-approve">{saved}</p>}
+        {err && <p className="mt-2 text-sm text-reject">{err}</p>}
+      </div>
+    </section>
   );
 }
 

@@ -219,6 +219,28 @@ class BinanceTestnetAdapter(BrokerAdapter):
             positions=tuple(positions),
         )
 
+    async def get_withdrawal_enabled(self) -> bool | None:
+        """Whether this API key can withdraw funds (CLAUDE.md §12).
+
+        Returns True if the exchange reports withdrawals enabled, False if it
+        reports them disabled, and **None when it cannot be determined** — the
+        spot testnet does not expose `/sapi/v1/account/apiRestrictions`, and a
+        transient error is not a permission signal. The caller decides what an
+        unknown answer means (the account API allows the save and logs it).
+
+        Best-effort by design: this never raises. A key we cannot check is not the
+        same as a dangerous key, and refusing every save when the endpoint is
+        simply absent would make testnet unusable.
+        """
+        try:
+            data = await self._request(
+                "GET", "/sapi/v1/account/apiRestrictions", idempotent=True
+            )
+        except BrokerError:
+            return None
+        value = data.get("enableWithdrawals")
+        return bool(value) if value is not None else None
+
     async def _last_price(self, symbol: str) -> Decimal:
         data = await self._request(
             "GET", "/api/v3/ticker/price", {"symbol": symbol}, signed=False

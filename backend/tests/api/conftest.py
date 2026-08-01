@@ -58,7 +58,21 @@ async def app(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Any]:
     init_engine(DATABASE_URL)
     init_redis(REDIS_URL)
 
-    yield create_app()
+    application = create_app()
+
+    # Insulate every API test from the network by default. The withdrawal check
+    # and the kill-switch sweep both reach the exchange in production; tests that
+    # care about those paths override these explicitly.
+    from signalguard.api.routes_accounts import provide_key_checker
+    from signalguard.api.routes_killswitch import provide_kill_switch_broker
+
+    async def _unknown_permission(_key: str, _secret: str) -> None:
+        return None
+
+    application.dependency_overrides[provide_key_checker] = lambda: _unknown_permission
+    application.dependency_overrides[provide_kill_switch_broker] = lambda: None
+
+    yield application
 
     await dispose_engine()
     await close_redis()

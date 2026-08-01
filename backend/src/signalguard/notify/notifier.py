@@ -98,12 +98,24 @@ class Notifier:
         )
 
 
-def notifier_from_settings(settings: Settings) -> Notifier | None:
-    """Build a Notifier from config, or None when Telegram is not configured.
+def notifier_for_user(
+    settings: Settings, user_chat_id: str | None
+) -> Notifier | None:
+    """Build a Notifier that routes to a specific user's chat (§10, §12).
 
-    Returning None rather than a no-op keeps the "disabled" state explicit at the
-    call site and avoids constructing a client that can never send.
+    Shared bot + per-user chat id: one app-level bot token, and the destination
+    is the user's own chat when they have set one, otherwise the app-level chat.
+    Returns None when no bot token is configured, or when there is no chat to send
+    to at all — an explicit "disabled" rather than a client that can never send.
     """
-    if not settings.telegram_enabled:
+    if not settings.telegram_bot_token:
         return None
-    return Notifier(TelegramClient(settings.telegram_bot_token, settings.telegram_chat_id))
+    chat_id = user_chat_id or settings.telegram_chat_id
+    if not chat_id:
+        return None
+    return Notifier(TelegramClient(settings.telegram_bot_token, chat_id))
+
+
+def notifier_from_settings(settings: Settings) -> Notifier | None:
+    """Build a Notifier from the app-level config alone (no per-user routing)."""
+    return notifier_for_user(settings, None)

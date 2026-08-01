@@ -66,6 +66,10 @@ export interface Decision {
   is_test: boolean;
 }
 
+export interface NotificationSettings {
+  telegram_chat_id: string | null;
+}
+
 export interface Position {
   symbol: string;
   qty: string;

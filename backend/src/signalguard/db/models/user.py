@@ -21,6 +21,13 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True)
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)  # Argon2id (§12)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+    # Per-user Telegram destination (shared bot + per-user chat id). The bot token
+    # stays app-level (a secret in env); the chat id is a routing address, not a
+    # secret, so it is stored plainly. Null = fall back to the app-level chat, or
+    # no notifications if neither is set.
+    telegram_chat_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     created_at: Mapped[datetime] = created_at_col()
 
 

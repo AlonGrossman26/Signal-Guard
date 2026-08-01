@@ -17,8 +17,10 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
@@ -39,6 +41,30 @@ from signalguard.db.models import BrokerAccount, WebhookEndpoint
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["accounts"])
+
+# Given (api_key, api_secret), report whether the key can withdraw funds:
+# True (enabled), False (disabled), or None (could not be determined).
+KeyPermissionChecker = Callable[[str, str], Awaitable[bool | None]]
+
+
+async def _default_key_checker(api_key: str, api_secret: str) -> bool | None:
+    """Ask the exchange whether a key has withdrawals enabled (§12).
+
+    Best-effort: the spot testnet does not expose key permissions, and a
+    transient failure is not a permission signal, so both come back as None.
+    """
+    from signalguard.execution.binance_testnet import BinanceTestnetAdapter
+
+    adapter = BinanceTestnetAdapter(api_key, api_secret)
+    try:
+        return await adapter.get_withdrawal_enabled()
+    finally:
+        await adapter.aclose()
+
+
+def provide_key_checker() -> KeyPermissionChecker:
+    """The withdrawal-permission checker. Overridden in tests to avoid the network."""
+    return _default_key_checker
 
 
 def _account_response(account: BrokerAccount) -> BrokerAccountResponse:
@@ -64,6 +90,7 @@ async def create_broker_account(
     session: DbSession,
     user: CurrentUser,
     settings: AppSettings,
+    check_key: Annotated[KeyPermissionChecker, Depends(provide_key_checker)],
 ) -> BrokerAccountResponse:
     """Store an exchange credential, encrypted at rest.
 
@@ -71,6 +98,26 @@ async def create_broker_account(
     non-testnet account: live trading is not authorised in this phase, and the
     API is not a way around that (constraint #2).
     """
+    # Refuse a key the exchange reports as withdrawal-capable (§12). Policy when
+    # we cannot tell (testnet does not expose permissions, or the exchange is
+    # unreachable): allow the save and log it — an unverifiable key is not the
+    # same as a dangerous one, and refusing every save would make testnet
+    # unusable. Only a *confirmed* withdrawal permission is a hard refusal.
+    withdrawals_enabled = await check_key(body.api_key, body.api_secret)
+    if withdrawals_enabled is True:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "this API key has withdrawals enabled; create the key with "
+                "withdrawals disabled (and IP-restricted) before saving it"
+            ),
+        )
+    if withdrawals_enabled is None:
+        logger.warning(
+            "Could not verify withdrawal permission for a new key; saving anyway",
+            extra={"label": body.label},
+        )
+
     # The two secrets are serialised together and encrypted as one blob, so a
     # single (ciphertext, nonce) pair covers the whole credential.
     plaintext = json.dumps({"api_key": body.api_key, "api_secret": body.api_secret})

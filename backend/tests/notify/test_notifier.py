@@ -9,7 +9,11 @@ import secrets
 import httpx
 
 from signalguard.config import Settings
-from signalguard.notify.notifier import Notifier, notifier_from_settings
+from signalguard.notify.notifier import (
+    Notifier,
+    notifier_for_user,
+    notifier_from_settings,
+)
 from signalguard.notify.telegram import TelegramClient
 
 
@@ -98,3 +102,28 @@ def test_partial_telegram_config_is_treated_as_disabled() -> None:
     # A token without a chat id (or vice versa) is not usable — must be disabled.
     assert notifier_from_settings(_settings(telegram_bot_token="123:abc")) is None
     assert notifier_from_settings(_settings(telegram_chat_id="42")) is None
+
+
+def test_notifier_for_user_prefers_the_user_chat() -> None:
+    settings = _settings(telegram_bot_token="123:abc", telegram_chat_id="app-chat")
+    notifier = notifier_for_user(settings, "user-chat-999")
+    assert notifier is not None
+    # Routes to the user's own chat, not the app-level one.
+    assert notifier._client._chat_id == "user-chat-999"
+
+
+def test_notifier_for_user_falls_back_to_the_app_chat() -> None:
+    settings = _settings(telegram_bot_token="123:abc", telegram_chat_id="app-chat")
+    notifier = notifier_for_user(settings, None)
+    assert notifier is not None
+    assert notifier._client._chat_id == "app-chat"
+
+
+def test_notifier_for_user_none_without_a_bot_token() -> None:
+    # No app bot token: even a user chat id cannot produce a notifier.
+    assert notifier_for_user(_settings(), "user-chat") is None
+
+
+def test_notifier_for_user_none_without_any_chat() -> None:
+    # Token but no chat anywhere → nowhere to send.
+    assert notifier_for_user(_settings(telegram_bot_token="123:abc"), None) is None

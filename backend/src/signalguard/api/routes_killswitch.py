@@ -30,31 +30,50 @@ from fastapi import APIRouter, Depends
 from signalguard.api.routes_accounts import _owned_account
 from signalguard.api.schemas import BrokerAccountResponse, KillSwitchResponse
 from signalguard.api.security import AppSettings, CurrentUser, DbSession
+from signalguard.db.models import BrokerAccount
 from signalguard.execution.base import BrokerAdapter
+from signalguard.execution.factory import build_broker
 from signalguard.execution.killswitch import fire_kill_switch, set_locked, unlock_account
-from signalguard.notify import Notifier, notifier_from_settings
+from signalguard.notify import Notifier, notifier_for_user
 from signalguard.redis_client import get_redis
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/broker-accounts", tags=["kill-switch"])
 
 
-async def provide_kill_switch_broker(account_id: uuid.UUID) -> BrokerAdapter | None:
+async def provide_kill_switch_broker(
+    account_id: uuid.UUID, session: DbSession, settings: AppSettings
+) -> BrokerAdapter | None:
     """Broker adapter used to flatten an account when the kill switch fires.
 
-    Returns ``None`` by default: constructing the live Binance adapter needs the
-    broker-credential decryption path that the execution runtime owns, and this
-    endpoint must lock the account with or without it. The reconciler enforces
-    the flatten on any LOCKED account regardless. Tests and the execution runtime
-    override this dependency to supply a real (or fake) adapter and exercise the
-    immediate in-endpoint sweep.
+    Builds the real Binance testnet adapter from the account's encrypted
+    credentials, so firing the kill switch cancels orders and closes positions
+    immediately. Returns ``None`` — falling back to a durable lock only, with the
+    reconciler enforcing the flatten — when the account is gone or its
+    credentials cannot be decoded, because the endpoint must still lock the
+    account even when no broker can be built. Tests override this dependency with
+    a fake so no test touches the network.
     """
-    return None
+    account = await session.get(BrokerAccount, account_id)
+    if account is None:
+        return None
+    try:
+        return build_broker(account, settings.credentials_master_key)
+    except Exception:  # noqa: BLE001 - any build failure falls back to lock-only
+        logger.warning(
+            "Could not build broker for kill-switch sweep; locking only",
+            extra={"broker_account_id": str(account_id)},
+        )
+        return None
 
 
-async def provide_notifier(settings: AppSettings) -> Notifier | None:
-    """The Telegram notifier, or None when notifications are not configured."""
-    return notifier_from_settings(settings)
+async def provide_notifier(settings: AppSettings, user: CurrentUser) -> Notifier | None:
+    """The Telegram notifier for the current user, or None when unconfigured.
+
+    Routes to the user's own chat when they have set one, falling back to the
+    app-level chat (shared bot + per-user chat id, §12/§10).
+    """
+    return notifier_for_user(settings, user.telegram_chat_id)
 
 
 @router.post("/{account_id}/kill")

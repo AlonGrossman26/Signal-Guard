@@ -87,15 +87,25 @@ Surfaced while working through the spec. Flagged, not guessed — see plan §4.
 
 ---
 
+### Policy questions answered by the human (2026-08-01)
+
+Two decisions were needed before implementing the Phase 7 hardening; the human answered:
+
+| # | Question | Answer |
+|---|---|---|
+| PQ-1 | Withdrawal-permission check (§12): what to do when we CAN'T confirm a key's withdrawal permission (testnet doesn't expose it, or exchange offline)? | **Save unless withdrawals are confirmed ON.** Refuse only on a confirmed withdrawal permission; allow + log a warning when unknown. Implemented in H-2. |
+| PQ-2 | Per-user Telegram routing model? | **Shared app bot + per-user chat id.** One app-level bot token (env); each user stores their own chat id (falls back to the app-level chat). Implemented in H-3. |
+
 ## Task board
 
 Seeded from the phases in `CLAUDE.md` §14. Add rows as work is broken down further; give
-each a unique ID. **Status: Phases 1–6 all have code delivered and green against live
-Postgres + Redis; every task is `IN REVIEW`/`DONE` awaiting the human's phase sign-off.**
-Phase 5/6 (P5-1/2/3, P6-1/2) were built on branch `claude/task-booking-completion-o2trly`
-(this session is branch-scoped, not `main`). The Phase 3/4 rows still read `BACKLOG` but
-their code is merged and passing — see the reconciliation note in the changelog; the human
-should confirm their real status.
+each a unique ID. **Status: all tasks `DONE` — Phases 0–7 delivered, tested (367 backend
+tests green vs live Postgres + Redis; frontend `tsc` + `build` clean; ruff + mypy `--strict`
+clean), and merged to `main`** on the human's instruction. The two remaining policy questions
+were answered by the human and implemented as Phase 7 (H-1/H-2/H-3). Still unverified because
+they need infrastructure this session lacks: a real Binance **testnet round-trip** (Phase 4's
+live gate) and a browser run of the dashboard against a live backend; Docker Compose itself is
+also unrun here.
 
 > **Note on the open questions.** The human replied "can you program it" without answering Q1–Q5 or
 > OQ-1…OQ-6. Those answers are therefore recorded as **adopted by default** — the agent's own
@@ -107,59 +117,70 @@ should confirm their real status.
 
 | ID | Task | Layer | Owner | Status | Depends on | Notes |
 |---|---|---|---|---|---|---|
-| P0-1 | Restate the project, list assumptions, answer/surface the §15 open questions | — | claude-opus-5 (phase-0) | IN REVIEW | — | Delivered in [`docs/phase-0-plan.md`](./docs/phase-0-plan.md) §1–§3. Q1–Q5 answered as **recommendations only** — human decides. 6 new open questions raised (OQ-1…OQ-6) that block Phase 1/2; see plan §4. |
-| P0-2 | Propose the file tree (§5) and get sign-off | — | claude-opus-5 (phase-0) | IN REVIEW | — | Plan §5. Expands CLAUDE.md §5 layout; no new top-level dirs beyond `backend/`, `frontend/`, `docs/`. |
-| P0-3 | Propose exact table columns (§6) and get sign-off | — | claude-opus-5 (phase-0) | IN REVIEW | — | Plan §6. Proposes 4 tables beyond CLAUDE.md §6 (`sessions`, `webhook_endpoints`, `circuit_breaker_state`, `instruments`) — each justified, each needs explicit sign-off. |
+| P0-1 | Restate the project, list assumptions, answer/surface the §15 open questions | — | claude-opus-5 (phase-0) | DONE | — | Delivered in [`docs/phase-0-plan.md`](./docs/phase-0-plan.md) §1–§3. Q1–Q5 answered as **recommendations only** — human decides. 6 new open questions raised (OQ-1…OQ-6) that block Phase 1/2; see plan §4. |
+| P0-2 | Propose the file tree (§5) and get sign-off | — | claude-opus-5 (phase-0) | DONE | — | Plan §5. Expands CLAUDE.md §5 layout; no new top-level dirs beyond `backend/`, `frontend/`, `docs/`. |
+| P0-3 | Propose exact table columns (§6) and get sign-off | — | claude-opus-5 (phase-0) | DONE | — | Plan §6. Proposes 4 tables beyond CLAUDE.md §6 (`sessions`, `webhook_endpoints`, `circuit_breaker_state`, `instruments`) — each justified, each needs explicit sign-off. |
 
 ### Phase 1 — Skeleton
 
 | ID | Task | Layer | Owner | Status | Depends on | Notes |
 |---|---|---|---|---|---|---|
-| P1-1 | Docker Compose: Postgres, Redis, API | infra | claude-opus-5 (phase-1) | IN REVIEW | P0-2 | Compose + Dockerfile + `.gitattributes`/`.dockerignore`/`.env.example` written. **Not verified by the agent — no Docker daemon in the build session.** Human must run `docker compose up -d --build`. |
-| P1-2 | FastAPI app + `/health` endpoint | api | claude-opus-5 (phase-1) | IN REVIEW | P1-1 | `/health` checks Postgres + Redis and returns 503 when either is down (fail closed). Verified against a live Postgres + Redis. |
-| P1-3 | Alembic migrations + config loading + structured JSON logging with redaction | db/config | claude-opus-5 (phase-1) | IN REVIEW | P0-3, P1-1 | Full schema (13 tables) in one migration, incl. append-only triggers and partial unique indexes. Config fails closed on missing secrets; live-trading flag needs a confirmation phrase. |
+| P1-1 | Docker Compose: Postgres, Redis, API | infra | claude-opus-5 (phase-1) | DONE | P0-2 | Compose + Dockerfile + `.gitattributes`/`.dockerignore`/`.env.example` written. **Not verified by the agent — no Docker daemon in the build session.** Human must run `docker compose up -d --build`. |
+| P1-2 | FastAPI app + `/health` endpoint | api | claude-opus-5 (phase-1) | DONE | P1-1 | `/health` checks Postgres + Redis and returns 503 when either is down (fail closed). Verified against a live Postgres + Redis. |
+| P1-3 | Alembic migrations + config loading + structured JSON logging with redaction | db/config | claude-opus-5 (phase-1) | DONE | P0-3, P1-1 | Full schema (13 tables) in one migration, incl. append-only triggers and partial unique indexes. Config fails closed on missing secrets; live-trading flag needs a confirmation phrase. |
 
 ### Phase 2 — Risk engine (pure)
 
 | ID | Task | Layer | Owner | Status | Depends on | Notes |
 |---|---|---|---|---|---|---|
-| P2-1 | Pure `risk/` package: decision types + the 10 rules in exact order (§7) | risk | claude-opus-5 (phase-2) | IN REVIEW | P0-3 | **Zero I/O.** Time is passed in. |
-| P2-2 | Position-sizing transform (§7 rule 9) | risk | claude-opus-5 (phase-2) | IN REVIEW | P2-1 | Closed-form buffer per OQ-3; round down. |
-| P2-3 | Full test suite for §13 (per-rule tables, ordering, DST, restart, Hypothesis) | tests | claude-opus-5 (phase-2) | IN REVIEW | P2-1, P2-2 | No test touches a network. |
-| P2-4 | Test asserting `risk/` imports no I/O libs (httpx/sqlalchemy/redis/datetime.now) | tests | claude-opus-5 (phase-2) | IN REVIEW | P2-1 | Guards the most important design rule. |
+| P2-1 | Pure `risk/` package: decision types + the 10 rules in exact order (§7) | risk | claude-opus-5 (phase-2) | DONE | P0-3 | **Zero I/O.** Time is passed in. |
+| P2-2 | Position-sizing transform (§7 rule 9) | risk | claude-opus-5 (phase-2) | DONE | P2-1 | Closed-form buffer per OQ-3; round down. |
+| P2-3 | Full test suite for §13 (per-rule tables, ordering, DST, restart, Hypothesis) | tests | claude-opus-5 (phase-2) | DONE | P2-1, P2-2 | No test touches a network. |
+| P2-4 | Test asserting `risk/` imports no I/O libs (httpx/sqlalchemy/redis/datetime.now) | tests | claude-opus-5 (phase-2) | DONE | P2-1 | Guards the most important design rule. |
 
 ### Phase 3 — Ingress
 
 | ID | Task | Layer | Owner | Status | Depends on | Notes |
 |---|---|---|---|---|---|---|
-| P3-1 | `POST /webhook/{endpoint_id}`: HMAC auth, timestamp replay guard, body-secret fallback | ingress | _unclaimed_ | BACKLOG | P1-2 | Reject oversized bodies before parsing. |
-| P3-2 | Strict schema validation + dedupe key (§8) + Redis rate limit | ingress | _unclaimed_ | BACKLOG | P3-1 | Same alert twice → 1 decision. |
-| P3-3 | Persist alert + decision (append-only), run risk in background task | ingress/db | _unclaimed_ | BACKLOG | P2-1, P3-2 | Respond 200 in < 50 ms. |
-| P3-4 | `POST /webhook/{endpoint_id}/test` — full pipeline, no broker | ingress | _unclaimed_ | BACKLOG | P3-3 | First-class, not a debug hook. |
+| P3-1 | `POST /webhook/{endpoint_id}`: HMAC auth, timestamp replay guard, body-secret fallback | ingress | claude-opus-5 (merged) | DONE | P1-2 | Reject oversized bodies before parsing. |
+| P3-2 | Strict schema validation + dedupe key (§8) + Redis rate limit | ingress | claude-opus-5 (merged) | DONE | P3-1 | Same alert twice → 1 decision. |
+| P3-3 | Persist alert + decision (append-only), run risk in background task | ingress/db | claude-opus-5 (merged) | DONE | P2-1, P3-2 | Respond 200 in < 50 ms. |
+| P3-4 | `POST /webhook/{endpoint_id}/test` — full pipeline, no broker | ingress | claude-opus-5 (merged) | DONE | P3-3 | First-class, not a debug hook. |
 
 ### Phase 4 — Execution
 
 | ID | Task | Layer | Owner | Status | Depends on | Notes |
 |---|---|---|---|---|---|---|
-| P4-1 | Broker abstract base + Binance testnet adapter (§9) | execution | _unclaimed_ | BACKLOG | P3-3 | Map broker errors to internal enum. |
-| P4-2 | Order submission + protective stop (atomic/bracket, else close-and-alert) | execution | _unclaimed_ | BACKLOG | P4-1 | Never leave a naked position. |
-| P4-3 | Reconciliation loop + fills → trades → PnL | execution | _unclaimed_ | BACKLOG | P4-1 | Broker is the source of truth. |
-| P4-4 | Kill switch: cancel → close all → LOCKED → notify (idempotent endpoint) | execution | _unclaimed_ | BACKLOG | P4-1 | Must work even if risk/WS is down. |
+| P4-1 | Broker abstract base + Binance testnet adapter (§9) | execution | claude-opus-5 (merged) | DONE | P3-3 | Map broker errors to internal enum. |
+| P4-2 | Order submission + protective stop (atomic/bracket, else close-and-alert) | execution | claude-opus-5 (merged) | DONE | P4-1 | Never leave a naked position. |
+| P4-3 | Reconciliation loop + fills → trades → PnL | execution | claude-opus-5 (merged) | DONE | P4-1 | Broker is the source of truth. |
+| P4-4 | Kill switch: cancel → close all → LOCKED → notify (idempotent endpoint) | execution | claude-opus-5 (merged) | DONE | P4-1 | Must work even if risk/WS is down. |
 
 ### Phase 5 — Dashboard
 
 | ID | Task | Layer | Owner | Status | Depends on | Notes |
 |---|---|---|---|---|---|---|
-| P5-1 | REST API: profiles, broker accounts, decisions, orders, positions, equity, kill switch | api | claude (phase-5) | IN REVIEW | P4-x | Full `api/` package under `/api`: session auth (Argon2id, revocable server-side sessions), risk-profile GET/PUT (partial, version-bump, money-as-string, tz validated), broker-account + webhook-endpoint CRUD (credentials write-only), decisions (reason-code filter + pagination) / orders / positions / equity read models, kill switch + unlock (reuses tested `execution.killswitch`). 40 new integration tests; whole suite 326 green vs live PG+Redis; ruff + mypy `--strict` clean. **Not yet handled:** live-broker sweep in the kill endpoint (needs the broker-credential→adapter path the execution runtime owns; the reconciler enforces flatten on LOCKED meanwhile), and refusing an exchange key with withdrawal permission (§12, needs a live exchange call). On branch `claude/task-booking-completion-o2trly`, not `main`. |
-| P5-2 | WebSocket `/ws` fed by Redis pub/sub | api | claude (phase-5) | IN REVIEW | P5-1 | Shared `realtime.py` publisher (per-user channel, money-as-strings, fail-soft), authenticated `/ws` endpoint (cookie auth, `connected`/`heartbeat` frames, read-only fan-out, per-user isolation). Decisions wired end-to-end through ingress; orders/positions/equity via an optional `event_sink` in the reconciler (off by default). 13 tests incl. real-Redis round-trip, live-webhook→event e2e, WS scoping, reconciler emission. Suite 335 green; ruff + mypy `--strict` clean. Branch `claude/task-booking-completion-o2trly`. |
-| P5-3 | Next.js frontend — Live, Risk profile, History, Setup pages | frontend | claude (phase-5) | IN REVIEW | P5-1, P5-2 | Next.js 14 (App Router) + TS + Tailwind + Lightweight Charts. Login/register; `Shell` auth-guard + nav. **Live** (WS-fed decision feed colour-coded by verdict + REST backfill, positions, per-account kill switch with two-step confirm + unlock); **Risk profile** (§7 form + live sizing preview using the OQ-3 closed form, version bump on save); **History** (equity curve via Lightweight Charts + decisions-by-reason-code); **Setup** (broker account create, webhook endpoint mint with token/secrets shown once, TradingView template, test-signal button hitting `/test`). Typed API client (`credentials: include`), auto-reconnecting `useWebSocket`. `npm run build` + `tsc --noEmit` both clean on patched next 14.2.35. Backend: added credentialed CORS (`CORS_ALLOW_ORIGINS`, default `:3000`). |
+| P5-1 | REST API: profiles, broker accounts, decisions, orders, positions, equity, kill switch | api | claude (phase-5) | DONE | P4-x | Full `api/` package under `/api`: session auth (Argon2id, revocable server-side sessions), risk-profile GET/PUT (partial, version-bump, money-as-string, tz validated), broker-account + webhook-endpoint CRUD (credentials write-only), decisions (reason-code filter + pagination) / orders / positions / equity read models, kill switch + unlock (reuses tested `execution.killswitch`). 40 integration tests; ruff + mypy `--strict` clean. Follow-ups now closed by H-1/H-2 (immediate broker sweep + withdrawal-permission check). |
+| P5-2 | WebSocket `/ws` fed by Redis pub/sub | api | claude (phase-5) | DONE | P5-1 | Shared `realtime.py` publisher (per-user channel, money-as-strings, fail-soft), authenticated `/ws` endpoint (cookie auth, `connected`/`heartbeat` frames, read-only fan-out, per-user isolation). Decisions wired end-to-end through ingress; orders/positions/equity via an optional `event_sink` in the reconciler (off by default). 13 tests incl. real-Redis round-trip, live-webhook→event e2e, WS scoping, reconciler emission. Suite 335 green; ruff + mypy `--strict` clean. Branch `claude/task-booking-completion-o2trly`. |
+| P5-3 | Next.js frontend — Live, Risk profile, History, Setup pages | frontend | claude (phase-5) | DONE | P5-1, P5-2 | Next.js 14 (App Router) + TS + Tailwind + Lightweight Charts. Login/register; `Shell` auth-guard + nav. **Live** (WS-fed decision feed colour-coded by verdict + REST backfill, positions, per-account kill switch with two-step confirm + unlock); **Risk profile** (§7 form + live sizing preview using the OQ-3 closed form, version bump on save); **History** (equity curve via Lightweight Charts + decisions-by-reason-code); **Setup** (broker account create, webhook endpoint mint with token/secrets shown once, TradingView template, test-signal button hitting `/test`). Typed API client (`credentials: include`), auto-reconnecting `useWebSocket`. `npm run build` + `tsc --noEmit` both clean on patched next 14.2.35. Backend: added credentialed CORS (`CORS_ALLOW_ORIGINS`, default `:3000`). |
 
 ### Phase 6 — Ops
 
 | ID | Task | Layer | Owner | Status | Depends on | Notes |
 |---|---|---|---|---|---|---|
-| P6-1 | Telegram notifications | notify | claude (phase-5) | IN REVIEW | P4-4 | `notify/` package: `TelegramClient` (httpx, timeout, bounded retries on transient/5xx/429, token kept out of logs and errors) + `Notifier` (kill-switch/naked-position/circuit-breaker/drawdown messages, HTML-escaped, **fail-soft** — a send failure never breaks the caller). Wired into the kill-switch endpoint best-effort. App-level config (`TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`, both blank = disabled); **per-user routing is a later enhancement** (no per-user Telegram fields in the §6 model). 14 tests via httpx MockTransport (no network). Suite 349 green; ruff + mypy `--strict` clean. |
-| P6-2 | Deploy docs + `docs/runbook.md` (the 3am runbook) | docs | claude (phase-5) | IN REVIEW | P5-3 | `docs/runbook.md` (scenario-driven 3am runbook: fastest actions + kill-switch incl. DB fallback, per-dependency triage, migrations, backups, rollback, reason-code appendix) and `docs/deploy.md` (prereqs, config, compose up, migrations, health, first-user/webhook, WS, ops reference). All commands + endpoints verified against the code. Dep on P5-3 was nominal — docs cover the running backend stack and are valid now. |
+| P6-1 | Telegram notifications | notify | claude (phase-5) | DONE | P4-4 | `notify/` package: `TelegramClient` (httpx, timeout, bounded retries on transient/5xx/429, token kept out of logs and errors) + `Notifier` (kill-switch/naked-position/circuit-breaker/drawdown messages, HTML-escaped, **fail-soft** — a send failure never breaks the caller). Wired into the kill-switch endpoint best-effort. 14 tests via httpx MockTransport (no network); ruff + mypy `--strict` clean. Per-user routing added by H-3. |
+| P6-2 | Deploy docs + `docs/runbook.md` (the 3am runbook) | docs | claude (phase-5) | DONE | P5-3 | `docs/runbook.md` (scenario-driven 3am runbook: fastest actions + kill-switch incl. DB fallback, per-dependency triage, migrations, backups, rollback, reason-code appendix) and `docs/deploy.md` (prereqs, config, compose up, migrations, health, first-user/webhook, WS, ops reference). All commands + endpoints verified against the code. Dep on P5-3 was nominal — docs cover the running backend stack and are valid now. |
+
+### Phase 7 — Hardening (post-review follow-ups)
+
+Closed the three gaps that were flagged as "not yet handled" on P5-1/P6-1, after the
+human answered the two open policy questions (see the open-questions section).
+
+| ID | Task | Layer | Owner | Status | Depends on | Notes |
+|---|---|---|---|---|---|---|
+| H-1 | Kill-switch immediate broker sweep | execution/api | claude (phase-5) | DONE | P5-1 | `execution/factory.py` builds the real Binance testnet adapter from an account's encrypted creds (decrypted only at use); `provide_kill_switch_broker` now returns it, so firing the kill switch cancels + closes immediately (falls back to lock-only + reconciler when creds can't be decoded). Unit tests for the factory + adapter permission call; all kill-switch endpoint tests inject fakes so no test hits the network. |
+| H-2 | Withdrawal-permission key check (§12) | api/execution | claude (phase-5) | DONE | P5-1 | Adapter `get_withdrawal_enabled()` (True/False/None); account-create refuses only when withdrawals are **confirmed ON**, saves + logs when unknown (testnet doesn't expose it / exchange offline) — per the human's answer. Injectable checker (`provide_key_checker`) so tests never touch the network. |
+| H-3 | Per-user Telegram routing | notify/db/api | claude (phase-5) | DONE | P6-1 | Shared app bot + per-user chat id (human's answer). Migration `0002` adds `users.telegram_chat_id`; `GET`/`PUT /api/notifications`; `notifier_for_user` routes to the user's chat, falling back to the app-level chat. Frontend: a Telegram card on Setup. 10 tests (notifications API + per-user notifier). |
 
 ### Cross-cutting — Ops & tooling
 
@@ -210,3 +231,6 @@ Append a line whenever a task changes status, so the history of who-did-what is 
 | 2026-08-01 | P6-1 | `notify/` Telegram client + fail-soft Notifier; wired into the kill switch. 14 pure tests (MockTransport). Suite 349 green; ruff + mypy `--strict` clean. → `IN REVIEW`. | claude (phase-5) |
 | 2026-08-01 | P6-2 | `docs/runbook.md` (3am runbook) + `docs/deploy.md`; commands/endpoints verified against code. → `IN REVIEW`. | claude (phase-5) |
 | 2026-08-01 | P5-3 | Next.js dashboard (Live/Risk/History/Setup + login), typed API client, auto-reconnecting WS hook, kill switch with confirm. Backend CORS added. `npm run build` + `tsc` clean; backend suite 349 green. → `IN REVIEW`. All Phase 5/6 tasks now delivered on branch `claude/task-booking-completion-o2trly`, awaiting human sign-off. | claude (phase-5) |
+| 2026-08-01 | PQ-1, PQ-2 | Human answered the two policy questions: withdrawal check = save-unless-confirmed-ON; Telegram = shared bot + per-user chat id. | human |
+| 2026-08-01 | H-1, H-2, H-3 | Phase 7 hardening: kill-switch immediate broker sweep (broker factory), withdrawal-permission check, per-user Telegram routing (migration 0002 + `/api/notifications` + frontend card). 18 new tests; backend suite 367 green; frontend `tsc`+`build` clean; ruff + mypy `--strict` clean. → `DONE`. | claude (phase-5) |
+| 2026-08-01 | P0-1…P6-2, P3-x, P4-x | On the human's instruction, marked all delivered tasks `DONE` (Phases 0–6 code is built and green; Phase 3/4 code was already merged) and merged branch `claude/task-booking-completion-o2trly` into `main`. | claude (phase-5) |

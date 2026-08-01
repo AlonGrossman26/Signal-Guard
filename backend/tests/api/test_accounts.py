@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from httpx import AsyncClient
 
@@ -28,6 +30,32 @@ async def test_create_returns_account_without_credentials(client: AsyncClient) -
     assert "api_key" not in response.text
     assert "api_secret" not in response.text
     assert "AS-secret-secret" not in response.text
+
+
+async def test_refuses_a_key_with_withdrawals_enabled(
+    app: Any, client: AsyncClient
+) -> None:
+    """§12: a key the exchange reports as withdrawal-capable must not be saved."""
+    from signalguard.api.routes_accounts import provide_key_checker
+
+    await register(client)
+
+    async def _withdrawals_on(_key: str, _secret: str) -> bool:
+        return True
+
+    app.dependency_overrides[provide_key_checker] = lambda: _withdrawals_on
+    response = await client.post("/api/broker-accounts", json=CREATE)
+    assert response.status_code == 422
+    assert "withdrawal" in response.text.lower()
+    # Nothing was saved.
+    assert (await client.get("/api/broker-accounts")).json() == []
+
+
+async def test_saves_a_key_when_permission_is_unknown(client: AsyncClient) -> None:
+    """The default checker returns None (testnet doesn't expose it) → save allowed."""
+    await register(client)
+    # conftest installs a checker that returns None (unknown) for every test.
+    assert (await client.post("/api/broker-accounts", json=CREATE)).status_code == 201
 
 
 async def test_duplicate_label_rejected(client: AsyncClient) -> None:
