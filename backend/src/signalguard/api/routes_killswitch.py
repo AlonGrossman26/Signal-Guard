@@ -29,9 +29,10 @@ from fastapi import APIRouter, Depends
 
 from signalguard.api.routes_accounts import _owned_account
 from signalguard.api.schemas import BrokerAccountResponse, KillSwitchResponse
-from signalguard.api.security import CurrentUser, DbSession
+from signalguard.api.security import AppSettings, CurrentUser, DbSession
 from signalguard.execution.base import BrokerAdapter
 from signalguard.execution.killswitch import fire_kill_switch, set_locked, unlock_account
+from signalguard.notify import Notifier, notifier_from_settings
 from signalguard.redis_client import get_redis
 
 logger = logging.getLogger(__name__)
@@ -51,12 +52,18 @@ async def provide_kill_switch_broker(account_id: uuid.UUID) -> BrokerAdapter | N
     return None
 
 
+async def provide_notifier(settings: AppSettings) -> Notifier | None:
+    """The Telegram notifier, or None when notifications are not configured."""
+    return notifier_from_settings(settings)
+
+
 @router.post("/{account_id}/kill")
 async def kill_switch(
     account_id: uuid.UUID,
     session: DbSession,
     user: CurrentUser,
     broker: Annotated[BrokerAdapter | None, Depends(provide_kill_switch_broker)] = None,
+    notifier: Annotated[Notifier | None, Depends(provide_notifier)] = None,
 ) -> KillSwitchResponse:
     """Lock the account and flatten it. Idempotent — firing twice is harmless."""
     account = await _owned_account(session, user.id, account_id)
@@ -84,6 +91,20 @@ async def kill_switch(
         "Kill switch fired via API",
         extra={"broker_account_id": str(account.id), "swept": swept, "errors": errors},
     )
+
+    # Notify best-effort, after the lock is durable. kill_switch_fired never
+    # raises; closing the client here avoids leaking a per-request connection.
+    if notifier is not None:
+        try:
+            await notifier.kill_switch_fired(
+                account.label,
+                orders_cancelled=orders_cancelled,
+                positions_closed=positions_closed,
+                errors=errors,
+            )
+        finally:
+            await notifier.aclose()
+
     return KillSwitchResponse(
         account_id=account.id,
         trading_state=account.trading_state,

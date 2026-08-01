@@ -67,6 +67,18 @@ class Settings(BaseSettings):
     live_trading_enabled: bool = False
     live_trading_confirmation: str = ""
 
+    # Telegram notifications (CLAUDE.md §1, §10). Optional: absent means
+    # notifications are simply disabled — they are an alerting convenience, never
+    # a safety control, so an unconfigured bot must not stop the app from running
+    # or a kill switch from firing. App-level for v1; per-user routing is a later
+    # enhancement (the data model has no per-user Telegram fields yet).
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+
+    @property
+    def telegram_enabled(self) -> bool:
+        return bool(self.telegram_bot_token and self.telegram_chat_id)
+
     @field_validator("credentials_master_key", "endpoint_id_pepper", "session_secret")
     @classmethod
     def _require_secret(cls, value: str, info: ValidationInfo) -> str:

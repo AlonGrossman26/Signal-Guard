@@ -36,6 +36,8 @@ def _register_known_secrets(settings: Settings) -> None:
     register_secret_value(settings.credentials_master_key)
     register_secret_value(settings.endpoint_id_pepper)
     register_secret_value(settings.session_secret)
+    if settings.telegram_bot_token:
+        register_secret_value(settings.telegram_bot_token)
     # The URLs themselves carry credentials in userinfo.
     register_secret_value(settings.database_url)
     register_secret_value(settings.redis_url)

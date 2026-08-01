@@ -76,6 +76,32 @@ async def test_kill_with_broker_sweeps_positions(
     assert fake.close_all_calls >= 1
 
 
+async def test_kill_switch_notifies(app: Any, client: AsyncClient) -> None:
+    """Firing the kill switch sends the loudest notification this system has."""
+    from signalguard.api.routes_killswitch import provide_notifier
+
+    calls: list[dict[str, Any]] = []
+
+    class SpyNotifier:
+        async def kill_switch_fired(self, label: str, **kw: Any) -> bool:
+            calls.append({"label": label, **kw})
+            return True
+
+        async def aclose(self) -> None:
+            pass
+
+    account_id = await _make_account(client)
+    app.dependency_overrides[provide_notifier] = lambda: SpyNotifier()
+    try:
+        response = await client.post(f"/api/broker-accounts/{account_id}/kill")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    assert len(calls) == 1
+    assert calls[0]["label"] == "acct"
+
+
 async def test_kill_is_idempotent(client: AsyncClient) -> None:
     account_id = await _make_account(client)
     first = await client.post(f"/api/broker-accounts/{account_id}/kill")
