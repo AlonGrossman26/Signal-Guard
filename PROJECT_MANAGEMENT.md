@@ -154,7 +154,7 @@ each a unique ID. **Current phase: 1 — Skeleton (delivered, awaiting human sig
 | ID | Task | Layer | Owner | Status | Depends on | Notes |
 |---|---|---|---|---|---|---|
 | P6-1 | Telegram notifications | notify | claude (phase-5) | IN REVIEW | P4-4 | `notify/` package: `TelegramClient` (httpx, timeout, bounded retries on transient/5xx/429, token kept out of logs and errors) + `Notifier` (kill-switch/naked-position/circuit-breaker/drawdown messages, HTML-escaped, **fail-soft** — a send failure never breaks the caller). Wired into the kill-switch endpoint best-effort. App-level config (`TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID`, both blank = disabled); **per-user routing is a later enhancement** (no per-user Telegram fields in the §6 model). 14 tests via httpx MockTransport (no network). Suite 349 green; ruff + mypy `--strict` clean. |
-| P6-2 | Deploy docs + `docs/runbook.md` (the 3am runbook) | docs | claude (phase-5) | RESERVED | P5-3 | — |
+| P6-2 | Deploy docs + `docs/runbook.md` (the 3am runbook) | docs | claude (phase-5) | IN REVIEW | P5-3 | `docs/runbook.md` (scenario-driven 3am runbook: fastest actions + kill-switch incl. DB fallback, per-dependency triage, migrations, backups, rollback, reason-code appendix) and `docs/deploy.md` (prereqs, config, compose up, migrations, health, first-user/webhook, WS, ops reference). All commands + endpoints verified against the code. Dep on P5-3 was nominal — docs cover the running backend stack and are valid now. |
 
 ### Cross-cutting — Ops & tooling
 
@@ -203,3 +203,4 @@ Append a line whenever a task changes status, so the history of who-did-what is 
 | 2026-08-01 | P5-2, P5-3, P6-1, P6-2 | Booked the remaining Phase 5/6 work: P5-2 → `IN PROGRESS`; P5-3, P6-1, P6-2 pre-booked → `RESERVED`. | claude (phase-5) |
 | 2026-08-01 | P5-2 | Realtime publisher + `/ws` endpoint; decision fan-out wired through ingress, orders/positions/equity via optional reconciler sink. 13 tests; suite 335 green; ruff + mypy `--strict` clean. → `IN REVIEW`. | claude (phase-5) |
 | 2026-08-01 | P6-1 | `notify/` Telegram client + fail-soft Notifier; wired into the kill switch. 14 pure tests (MockTransport). Suite 349 green; ruff + mypy `--strict` clean. → `IN REVIEW`. | claude (phase-5) |
+| 2026-08-01 | P6-2 | `docs/runbook.md` (3am runbook) + `docs/deploy.md`; commands/endpoints verified against code. → `IN REVIEW`. | claude (phase-5) |
