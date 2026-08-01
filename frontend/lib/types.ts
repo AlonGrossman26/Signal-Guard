@@ -86,6 +86,22 @@ export interface EquityPoint {
   is_session_baseline: boolean;
 }
 
+// A closed round-trip. Money stays a string all the way to the render — parsing
+// it into a JS number would reintroduce exactly the float error the backend
+// works to avoid (constraint #3).
+export interface Trade {
+  id: string;
+  symbol: string;
+  side: string;
+  qty: string;
+  entry_price: string;
+  exit_price: string;
+  realized_pnl: string;
+  fees: string;
+  opened_at: string | null;
+  closed_at: string;
+}
+
 // A realtime event as forwarded by /ws.
 export interface WsEvent {
   type: "connected" | "heartbeat" | "decision" | "order" | "position" | "equity";

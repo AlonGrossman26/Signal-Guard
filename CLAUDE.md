@@ -318,8 +318,12 @@ Billing / subscription tiers / quotas · multiple brokers (design the interface,
 | **4 — Execution** | Binance testnet adapter, order submission, stop placement, reconciliation, fills → trades → PnL | Testnet round-trip |
 | **5 — Dashboard** | Next.js frontend, WebSocket feed, all four pages, kill switch | Kill switch flattens testnet |
 | **6 — Ops** | Telegram notifications, deploy docs, 3am runbook | `docs/runbook.md` |
+| **7 — Hardening** | Kill-switch broker sweep, withdrawal-permission check, per-user Telegram | Kill switch cancels + closes immediately |
+| **8 — Wiring** | Join the layers: ingress → execution, reconciliation loop running, trades + circuit-breaker state + instrument cache written | Approved alert places an entry **and** its stop; 5 concurrent alerts → 1 order |
 
-**Current phase: 8 — Wiring.** Phases 0–7 are built and green (367 backend tests, `ruff`, `mypy --strict`, frontend `tsc` + `build`), but the 2026-08-01 audit found the layers were never joined: `ingress/` still runs on a placeholder broker and never calls `execution/`, so an approved decision submits no order. Phase 8 closes that. See [`PROJECT_MANAGEMENT.md`](./PROJECT_MANAGEMENT.md) — it is the authority on task status; this line is a pointer, not a second source of truth.
+**Current phase: 8 complete.** Phases 0–8 are delivered and green — **391 backend tests**, `ruff`, `mypy --strict` (60 files), frontend `tsc` + `build`, and the dashboard verified in a real browser (12/12). The pipeline runs end to end: an approved decision now submits a real entry and its protective stop.
+
+**Two verification gates remain open and are not claimed as done:** a Binance **testnet round-trip** (V-2) and `docker compose up` (V-1). Both are refused by the current sandbox's network policy, not by the code — the adapter's request/response mapping against the real exchange, and the Docker artifacts themselves, are still unproven. See [`PROJECT_MANAGEMENT.md`](./PROJECT_MANAGEMENT.md) — it is the authority on task status; this line is a pointer, not a second source of truth.
 
 ---
 

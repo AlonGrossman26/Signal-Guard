@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from signalguard.db.models import (
@@ -71,12 +72,27 @@ AccountStateProvider = Callable[
     [BrokerAccount], Awaitable[tuple[Decimal, Decimal, tuple[OpenPosition, ...]]]
 ]
 
+# Supplies the current market price for sizing a MARKET order. Injected for the
+# same reason as the state provider: fetching a price is broker work, and this
+# layer knows no brokers. Returning None means "no price available", which the
+# rule chain turns into a rejection rather than a guess.
+ReferencePriceProvider = Callable[[BrokerAccount, str], Awaitable[Decimal | None]]
+
 
 @dataclass(frozen=True)
 class PipelineResult:
+    """The outcome of evaluating one alert.
+
+    `account` and `alert_input` are carried out so the caller can execute an
+    approval without re-resolving what the pipeline already resolved. They are
+    None on the paths where evaluation stopped before they existed.
+    """
+
     decision: Decision
     decision_id: uuid.UUID
     latency_ms: int
+    account: BrokerAccount | None = None
+    alert_input: AlertInput | None = None
 
 
 def _pipeline_rejection(
@@ -195,6 +211,7 @@ async def load_drawdown(
     profile: RiskProfile,
     now: datetime,
     current_equity: Decimal,
+    free_balance: Decimal | None = None,
 ) -> DrawdownSnapshot:
     """Find today's baseline and whether the limit has already been breached.
 
@@ -215,8 +232,30 @@ async def load_drawdown(
     baseline_row = baseline_result.scalar_one_or_none()
 
     if baseline_row is None:
-        # No baseline yet for this session: the current equity becomes it. The
-        # caller persists it; a drawdown of zero cannot trip the limit.
+        # No baseline yet for this session, so the current equity becomes it and
+        # is persisted here and now. Returning a baseline without writing it (the
+        # original behaviour) meant the *next* alert looked it up, found nothing
+        # again, and re-baselined against whatever equity had become — which
+        # quietly makes a daily drawdown limit unable to ever trip.
+        try:
+            # A SAVEPOINT, not the outer transaction: a lost race for the
+            # baseline must not take the alert row down with it.
+            async with session.begin_nested():
+                session.add(
+                    EquitySnapshot(
+                        id=uuid.uuid4(),
+                        broker_account_id=account_id,
+                        equity=current_equity,
+                        free_balance=free_balance,
+                        taken_at=now,
+                        is_session_baseline=True,
+                        session_date=today,
+                    )
+                )
+        except IntegrityError:
+            # The partial unique index did its job: a concurrent alert created
+            # the baseline first. Theirs is as valid as ours would have been.
+            logger.debug("Session baseline already created concurrently")
         return DrawdownSnapshot(baseline_equity=current_equity, tripped_today=False)
 
     baseline = baseline_row.equity
@@ -310,7 +349,7 @@ async def evaluate_alert(
     is_duplicate: bool,
     account_state_provider: AccountStateProvider,
     now: datetime,
-    market_reference_price: Decimal | None = None,
+    reference_price_provider: ReferencePriceProvider | None = None,
     is_test: bool = False,
 ) -> PipelineResult:
     """Run the full pipeline for one alert and persist the decision.
@@ -390,19 +429,24 @@ async def evaluate_alert(
         )
 
     breaker = await load_circuit_breaker(session, account.id)
-    drawdown = await load_drawdown(session, account.id, profile, now, equity)
+    drawdown = await load_drawdown(
+        session, account.id, profile, now, equity, free_balance
+    )
 
     alert_input = build_alert_input(payload_data, alert.dedupe_key)
 
     # A limit order carries its own price. A market order does not, so sizing
     # needs a reference price fetched at evaluation time (plan §2, A8) — supplied
     # by the caller, because fetching it is broker work and this layer knows no
-    # brokers. Without one, sizing has nothing to work from and rule 9 rejects.
-    reference_price = (
-        alert_input.limit_price
-        if alert_input.order_type is OrderType.LIMIT
-        else market_reference_price
-    )
+    # brokers. Without one, sizing has nothing to work from and rule 6 rejects.
+    if alert_input.order_type is OrderType.LIMIT:
+        reference_price = alert_input.limit_price
+    elif reference_price_provider is not None:
+        reference_price = await reference_price_provider(
+            account, alert_input.symbol
+        )
+    else:
+        reference_price = None
 
     snapshot = Snapshot(
         now=now,
@@ -417,7 +461,16 @@ async def evaluate_alert(
     )
     decision = evaluate(snapshot)
     return await _finish(
-        session, alert, decision, account.id, profile.version, now, started, is_test
+        session,
+        alert,
+        decision,
+        account.id,
+        profile.version,
+        now,
+        started,
+        is_test,
+        account=account,
+        alert_input=alert_input,
     )
 
 
@@ -430,6 +483,9 @@ async def _finish(
     now: datetime,
     started: datetime,
     is_test: bool,
+    *,
+    account: BrokerAccount | None = None,
+    alert_input: AlertInput | None = None,
 ) -> PipelineResult:
     latency_ms = max(0, int((datetime.now(UTC) - started).total_seconds() * 1000))
     decision_id = await persist_decision(
@@ -443,5 +499,9 @@ async def _finish(
         is_test=is_test,
     )
     return PipelineResult(
-        decision=decision, decision_id=decision_id, latency_ms=latency_ms
+        decision=decision,
+        decision_id=decision_id,
+        latency_ms=latency_ms,
+        account=account,
+        alert_input=alert_input,
     )

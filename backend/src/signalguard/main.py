@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from signalguard import __version__
 from signalguard.api.health import router as health_router
@@ -19,12 +21,22 @@ from signalguard.api.routes_notifications import router as notifications_router
 from signalguard.api.routes_profile import router as profile_router
 from signalguard.api.routes_ws import router as ws_router
 from signalguard.config import Settings, get_settings
-from signalguard.db.session import dispose_engine, init_engine
+from signalguard.db.models import BrokerAccount
+from signalguard.db.session import dispose_engine, get_session, init_engine
+from signalguard.execution.base import BrokerAdapter
+from signalguard.execution.reconciler import reconciliation_loop
 from signalguard.ingress.routes import router as webhook_router
 from signalguard.logging import configure_logging, register_secret_value
-from signalguard.redis_client import close_redis, init_redis
+from signalguard.notify import Notifier
+from signalguard.redis_client import close_redis, get_redis, init_redis
+from signalguard.wiring import build_broker_for, notifier_for_account
 
 logger = logging.getLogger(__name__)
+
+# How long shutdown waits for the reconciler to finish its current cycle. Long
+# enough for an in-flight broker call to return, short enough that a container
+# stop does not hang.
+_RECONCILER_SHUTDOWN_SEC = 20.0
 
 
 def _register_known_secrets(settings: Settings) -> None:
@@ -72,12 +84,63 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         },
     )
 
+    stop_event = asyncio.Event()
+    reconciler: asyncio.Task[None] | None = None
+    if settings.reconciler_enabled:
+        reconciler = asyncio.create_task(
+            _run_reconciler(settings, stop_event), name="reconciler"
+        )
+        logger.info(
+            "Reconciliation loop started",
+            extra={"interval_sec": settings.reconciler_interval_sec},
+        )
+    else:
+        # Only ever off deliberately. Say so loudly: without the loop, order
+        # repair, position sync, equity snapshots, closed trades and the
+        # continuous LOCKED enforcement all stop happening.
+        logger.warning(
+            "Reconciliation loop is DISABLED — broker state will not be repaired"
+        )
+
     try:
         yield
     finally:
+        stop_event.set()
+        if reconciler is not None:
+            try:
+                await asyncio.wait_for(reconciler, timeout=_RECONCILER_SHUTDOWN_SEC)
+            except (TimeoutError, asyncio.CancelledError):
+                reconciler.cancel()
+                logger.warning("Reconciliation loop did not stop cleanly; cancelled")
         await dispose_engine()
         await close_redis()
         logger.info("SignalGuard stopped")
+
+
+async def _run_reconciler(settings: Settings, stop_event: asyncio.Event) -> None:
+    """Drive the reconciliation loop for the life of the process (CLAUDE.md §10).
+
+    Built here, in the composition root, because the loop takes its session and
+    broker factories by injection — that is what lets it be driven by a fake
+    broker in tests without ever reaching a network.
+    """
+
+    async def broker_factory(account: BrokerAccount) -> BrokerAdapter:
+        return await build_broker_for(account, settings.credentials_master_key)
+
+    async def notifier_factory(
+        session: AsyncSession, account: BrokerAccount
+    ) -> Notifier | None:
+        return await notifier_for_account(session, account, settings)
+
+    await reconciliation_loop(
+        get_session,
+        broker_factory,
+        settings.reconciler_interval_sec,
+        stop_event=stop_event,
+        redis=get_redis(),
+        notifier_factory=notifier_factory,
+    )
 
 
 def create_app() -> FastAPI:

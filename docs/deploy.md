@@ -51,6 +51,7 @@ Fill in:
 | `REDIS_URL` | `redis://redis:6379/0` — service name, not localhost. |
 | `CREDENTIALS_MASTER_KEY` / `ENDPOINT_ID_PEPPER` / `SESSION_SECRET` | the generated secrets. No defaults; blank = refuses to boot. |
 | `LIVE_TRADING_ENABLED` | leave `false`. `true` also demands the confirmation phrase or the app will not start. |
+| `RECONCILER_ENABLED` / `RECONCILER_INTERVAL_SEC` | leave `true` / `15`. The loop repairs order state, syncs positions, records equity, builds closed trades, refreshes exchange filters, and keeps a `LOCKED` account flat. Off means none of that happens; the app warns at boot when it is. |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | optional. Both blank = notifications disabled. Notifications are never a safety control, so leaving them off is fine. |
 
 **Never commit `.env`, and never put a real API key in `.env.example`.**
@@ -94,6 +95,19 @@ curl -fsS http://localhost:8000/health/live
 
 A 503 from `/health` means a dependency is down — the check reports honestly
 rather than returning 200 whenever the web framework is up. See the runbook §1.
+
+Also confirm the reconciliation loop came up, because `/health` does not cover it:
+
+```bash
+docker compose logs api | grep "Reconciliation loop"
+# Reconciliation loop started      <- expected
+# Reconciliation loop is DISABLED  <- someone set RECONCILER_ENABLED=false
+```
+
+Without it nothing repairs broker state: orders stay in whatever status they were
+last seen in, positions and the equity curve stop updating, no closed trades are
+recorded (so the circuit breaker never counts a loss), and a `LOCKED` account is
+no longer continuously flattened. Treat a missing line as a failed deploy.
 
 ---
 

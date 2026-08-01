@@ -21,6 +21,7 @@ from signalguard.api.schemas import (
     EquityPoint,
     OrderResponse,
     PositionResponse,
+    TradeResponse,
     money_out,
 )
 from signalguard.api.security import CurrentUser, DbSession
@@ -31,6 +32,7 @@ from signalguard.db.models import (
     EquitySnapshot,
     Order,
     Position,
+    Trade,
 )
 from signalguard.enums import ReasonCode
 
@@ -196,4 +198,44 @@ async def equity_curve(
             is_session_baseline=e.is_session_baseline,
         )
         for e in result.scalars().all()
+    ]
+
+
+@router.get("/trades")
+async def list_trades(
+    session: DbSession,
+    user: CurrentUser,
+    limit: Limit = _DEFAULT_LIMIT,
+    offset: Offset = 0,
+) -> list[TradeResponse]:
+    """The trade log: closed round-trips, newest first (§11 History page).
+
+    Distinct from `/orders` and not a prettier version of it. An order is an
+    instruction; a trade is a finished round-trip with a realized number attached.
+    Only trades carry PnL, and only trades are what the circuit breaker counts —
+    so this is the feed that explains why a breaker tripped.
+    """
+    stmt = (
+        select(Trade)
+        .join(BrokerAccount, BrokerAccount.id == Trade.broker_account_id)
+        .where(BrokerAccount.user_id == user.id)
+        .order_by(Trade.closed_at.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    result = await session.execute(stmt)
+    return [
+        TradeResponse(
+            id=t.id,
+            symbol=t.symbol,
+            side=t.side,
+            qty=str(t.qty),
+            entry_price=str(t.entry_price),
+            exit_price=str(t.exit_price),
+            realized_pnl=str(t.realized_pnl),
+            fees=str(t.fees),
+            opened_at=t.opened_at,
+            closed_at=t.closed_at,
+        )
+        for t in result.scalars().all()
     ]

@@ -36,6 +36,9 @@ from signalguard.execution.base import (
     BrokerError,
     BrokerPosition,
 )
+from signalguard.execution.instruments import refresh_if_stale
+from signalguard.execution.trades import settle_account
+from signalguard.notify import Notifier
 from signalguard.realtime import EventType, publish
 from signalguard.risk.session import session_date_for
 
@@ -53,6 +56,12 @@ BrokerFactory = Callable[[BrokerAccount], Awaitable[BrokerAdapter]]
 # durable tables are still the source of truth (constraint #5).
 EventSink = Callable[[EventType, dict[str, Any]], Awaitable[None]]
 
+# Builds the notifier for one account's owner. Takes the session so the per-user
+# chat lookup (H-3) reuses the cycle's connection instead of opening its own.
+NotifierFactory = Callable[
+    [AsyncSession, BrokerAccount], Awaitable["Notifier | None"]
+]
+
 # Statuses that may still change at the exchange, so they are worth asking about.
 _OPEN_STATUSES = (
     OrderStatus.PENDING_SUBMIT.value,
@@ -67,6 +76,10 @@ class ReconcileReport:
     orders_repaired: int = 0
     positions_synced: int = 0
     lock_violations_flattened: int = 0
+    trades_recorded: int = 0
+    consecutive_losses: int = 0
+    breaker_opened: bool = False
+    instruments_refreshed: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -77,6 +90,8 @@ async def reconcile_account(
     now: datetime,
     *,
     event_sink: EventSink | None = None,
+    redis: Any | None = None,
+    notifier: Notifier | None = None,
 ) -> ReconcileReport:
     """Pull broker truth and repair local state for one account.
 
@@ -84,8 +99,19 @@ async def reconcile_account(
     equity tick is also fanned out to the dashboard's live feed. It is optional
     so the loop, and every existing test, can run without a Redis publisher —
     the persisted rows are the record; the events are a live convenience on top.
+
+    `notifier` is likewise optional and best-effort: it carries the circuit-
+    breaker and drawdown alerts, which are notifications about a state already
+    durably recorded. A failed send never changes what was reconciled.
     """
     report = ReconcileReport()
+
+    # Exchange filters first: sizing depends on them, and a refresh that fails is
+    # survivable (the cached set stays valid until it ages out) whereas sizing
+    # against filters that aged out is not.
+    report.instruments_refreshed = await refresh_if_stale(
+        session, broker, account.broker, now
+    )
 
     # --- Orders ---------------------------------------------------------------
     # Every order we think is still open gets checked by its client_order_id.
@@ -136,6 +162,21 @@ async def reconcile_account(
         await session.flush()
         return report
 
+    # --- Closed trades and the circuit breaker --------------------------------
+    # Runs after order repair so a stop that filled while we were not looking is
+    # already FILLED here, and its round-trip is counted this cycle rather than
+    # next. A breaker that is one cycle behind is a breaker that lets through the
+    # trade it should have blocked.
+    trades, breaker_update = await settle_account(session, account, now, redis=redis)
+    report.trades_recorded = len(trades)
+    if breaker_update is not None:
+        report.consecutive_losses = breaker_update.consecutive_losses
+        report.breaker_opened = breaker_update.newly_opened
+        if breaker_update.newly_opened and notifier is not None:
+            await notifier.circuit_breaker_open(
+                account.label, breaker_update.consecutive_losses
+            )
+
     await _sync_positions(session, account.id, state.positions)
     report.positions_synced = len(state.positions)
     if event_sink is not None:
@@ -152,8 +193,16 @@ async def reconcile_account(
                 },
             )
 
-    await _record_equity(session, account, state.total_equity, state.free_balance,
-                         state.position_value, now)
+    breached = await _record_equity(
+        session, account, state.total_equity, state.free_balance,
+        state.position_value, now,
+    )
+    if breached and notifier is not None:
+        # Fired from here rather than from the rule, because the rule only runs
+        # when an alert arrives. A user whose drawdown limit trips at 3am with no
+        # signal pending still needs to be told — that is the whole point of the
+        # limit.
+        await notifier.daily_drawdown_hit(account.label)
     if event_sink is not None:
         await event_sink(
             EventType.EQUITY,
@@ -247,18 +296,22 @@ async def _record_equity(
     free_balance: Decimal,
     position_value: Decimal,
     now: datetime,
-) -> None:
+) -> bool:
     """Append an equity tick, creating the session baseline if today has none.
 
     The baseline is created lazily on the first reading of a new trading day.
     The partial unique index makes that safe under concurrency and across a
     restart: a second attempt for the same session_date simply loses.
+
+    Returns True when this tick is the one that crosses the user's daily
+    drawdown limit, so the caller can alert exactly once rather than on every
+    subsequent cycle.
     """
     profile_result = await session.execute(
         select(BrokerAccount).where(BrokerAccount.id == account.id)
     )
     if profile_result.scalar_one_or_none() is None:
-        return
+        return False
 
     from signalguard.db.models import RiskProfile
 
@@ -268,12 +321,12 @@ async def _record_equity(
         )
     ).scalar_one_or_none()
     if profile is None:
-        return
+        return False
 
     today = session_date_for(now, profile.daily_reset_time, profile.timezone)
-    baseline_exists = (
+    baseline_row = (
         await session.execute(
-            select(EquitySnapshot.id).where(
+            select(EquitySnapshot).where(
                 EquitySnapshot.broker_account_id == account.id,
                 EquitySnapshot.is_session_baseline.is_(True),
                 EquitySnapshot.session_date == today,
@@ -289,10 +342,33 @@ async def _record_equity(
             free_balance=free_balance,
             position_value=position_value,
             taken_at=now,
-            is_session_baseline=baseline_exists is None,
+            is_session_baseline=baseline_row is None,
             session_date=today,
         )
     )
+
+    if baseline_row is None or baseline_row.equity <= 0:
+        return False
+
+    limit_equity = baseline_row.equity * (Decimal("1") - profile.max_daily_dd_pct)
+    if equity > limit_equity:
+        return False
+
+    # Already breached earlier in this session? Then this is not the crossing,
+    # and the user has already been told.
+    previously_breached = (
+        await session.execute(
+            select(EquitySnapshot.id)
+            .where(
+                EquitySnapshot.broker_account_id == account.id,
+                EquitySnapshot.taken_at >= baseline_row.taken_at,
+                EquitySnapshot.taken_at < now,
+                EquitySnapshot.equity <= limit_equity,
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    return previously_breached is None
 
 
 async def _enforce_lock(broker: BrokerAdapter, state: BrokerAccountState) -> int:
@@ -329,6 +405,7 @@ async def reconciliation_loop(
     *,
     stop_event: asyncio.Event | None = None,
     redis: Any | None = None,
+    notifier_factory: NotifierFactory | None = None,
 ) -> None:
     """Reconcile every active account, forever.
 
@@ -339,6 +416,11 @@ async def reconciliation_loop(
     When `redis` is supplied, each account's repaired orders, positions and
     equity are published to that account owner's dashboard channel. Without it
     the loop reconciles silently, exactly as before.
+
+    An account whose adapter cannot be built (unsupported broker, credentials
+    that will not decode) is skipped with a log line rather than taking the whole
+    cycle down — one misconfigured account must not stop every other account from
+    being reconciled.
     """
     while stop_event is None or not stop_event.is_set():
         try:
@@ -347,11 +429,34 @@ async def reconciliation_loop(
                     select(BrokerAccount).where(BrokerAccount.is_active.is_(True))
                 )
                 for account in accounts.scalars():
-                    broker = await broker_factory(account)
+                    try:
+                        broker = await broker_factory(account)
+                    except Exception:
+                        logger.exception(
+                            "Could not build a broker adapter; skipping this account",
+                            extra={"broker_account_id": str(account.id)},
+                        )
+                        continue
+
                     sink = _sink_for(redis, account) if redis is not None else None
-                    await reconcile_account(
-                        session, broker, account, datetime.now(UTC), event_sink=sink
+                    notifier = (
+                        await notifier_factory(session, account)
+                        if notifier_factory is not None
+                        else None
                     )
+                    try:
+                        await reconcile_account(
+                            session,
+                            broker,
+                            account,
+                            datetime.now(UTC),
+                            event_sink=sink,
+                            redis=redis,
+                            notifier=notifier,
+                        )
+                    finally:
+                        if notifier is not None:
+                            await notifier.aclose()
                 await session.commit()
         except Exception:
             logger.exception("Reconciliation cycle failed; continuing")

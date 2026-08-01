@@ -4,6 +4,12 @@ This proves the wiring, not just the publisher: a real POST to the webhook
 endpoint runs the background risk evaluation, persists the decision, and fans it
 out over Redis. The dashboard's headline feature — the live decision feed —
 depends on exactly this path.
+
+**The fake broker is not optional here.** Since Phase 8 wired ingress to
+execution, the live webhook builds a real adapter and calls the exchange. Left
+alone this test would reach `testnet.binance.vision`, which §13 forbids outright
+("no test may touch a real network") and which would also make the suite depend
+on outbound access to pass.
 """
 
 from __future__ import annotations
@@ -11,15 +17,47 @@ from __future__ import annotations
 import json
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
+from typing import Any
 
 import pytest
 from httpx import AsyncClient
 
 from signalguard.realtime import channel_for
 from signalguard.redis_client import get_redis
+from signalguard.risk.types import OpenPosition
 from tests.api.conftest import register
+from tests.fakes.fake_broker import FakeBroker
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(autouse=True)
+def fake_broker(monkeypatch: pytest.MonkeyPatch) -> FakeBroker:
+    """Replace the broker seam so nothing in this module opens a socket."""
+    broker = FakeBroker(equity=Decimal("100000"), free_balance=Decimal("100000"))
+
+    from signalguard import wiring
+
+    def adapter_for(self: Any, account: Any) -> Any:
+        self._adapter = broker
+        self._account_id = str(account.id)
+        return broker
+
+    async def reference_price(self: Any, account: Any, symbol: str) -> Decimal:
+        return Decimal("62000.00")
+
+    async def account_state(
+        self: Any, account: Any
+    ) -> tuple[Decimal, Decimal, tuple[OpenPosition, ...]]:
+        self._adapter = broker
+        self._account_id = str(account.id)
+        return Decimal("100000"), Decimal("100000"), ()
+
+    monkeypatch.setattr(wiring.BrokerSession, "adapter_for", adapter_for)
+    monkeypatch.setattr(wiring.BrokerSession, "reference_price", reference_price)
+    monkeypatch.setattr(wiring.BrokerSession, "account_state", account_state)
+    return broker
 
 
 async def test_live_webhook_publishes_a_decision_event(client: AsyncClient) -> None:
