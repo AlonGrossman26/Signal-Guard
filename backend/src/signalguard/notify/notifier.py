@@ -88,6 +88,25 @@ class Notifier:
             ],
         )
 
+    async def undelivered_exit(self, account_label: str, reason_code: str) -> bool:
+        """An exit signal was rejected because we could not reach the broker.
+
+        The most user-hostile state this system can produce short of a naked
+        position: they asked to get out, we said no, and they are still in.
+        Worded so someone reading it on a phone knows they have to act.
+        """
+        return await self._safe_send(
+            "EXIT SIGNAL NOT DELIVERED",
+            [
+                f"Account: {account_label}",
+                f"Reason: {reason_code}",
+                "Your close/sell signal was REJECTED because the broker could not "
+                "be reached, so no closing order was placed.",
+                "You may still be holding this position. Check the exchange "
+                "directly and close it by hand if needed.",
+            ],
+        )
+
     async def daily_drawdown_hit(self, account_label: str) -> bool:
         return await self._safe_send(
             "📉 Daily drawdown limit hit",

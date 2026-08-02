@@ -47,7 +47,7 @@ from signalguard.ingress.schema import (
     redact_payload,
 )
 from signalguard.redis_client import get_redis
-from signalguard.wiring import BrokerSession, execute_approved
+from signalguard.wiring import BrokerSession, execute_approved, notify_undelivered_exit
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["webhook"])
@@ -389,6 +389,14 @@ async def _evaluate_in_background(
             await execute_approved(
                 session, broker_session, evaluation, alert.user_id, get_redis()
             )
+
+            # A rejected *exit* leaves the user still holding the position they
+            # asked to leave, so it is escalated rather than merely recorded
+            # (plan §3, Q2).
+            if payload_data is not None:
+                await notify_undelivered_exit(
+                    session, evaluation, str(payload_data.get("action", ""))
+                )
     except Exception:
         logger.exception(
             "Background risk evaluation failed", extra={"alert_id": str(alert_id)}

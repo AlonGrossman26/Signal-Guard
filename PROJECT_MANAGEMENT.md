@@ -59,31 +59,38 @@ If `CLAUDE.md` is the *rules* of the project, this file is the *state* of the pr
 
 ---
 
-## Open questions — must be answered before Phase 1 code (CLAUDE.md §15)
+## Open questions — ANSWERED (2026-08-02)
 
-These gate the whole project. Until the human answers them, tasks that depend on them
-stay `BLOCKED`. Record answers here as they arrive.
+**All eleven are now decided.** They had been recorded as *adopted by default* — the agent's own
+recommendations, used as working assumptions because the human never said yes or no. That is a
+worse state than it looks: the engine was coherent and thoroughly tested **against those
+assumptions**, so if one had been wrong the tests would have kept passing while the behaviour was
+wrong. No amount of testing finds that; only a decision does.
 
-| # | Question | Answer |
-|---|---|---|
-| Q1 | In-flight order when the kill switch fires mid-submission? | _unanswered_ — **proposed:** let it complete, never abandon it (an abandoned request loses the order ID → orphan position). `LOCKED` written first, sweep runs twice, and the reconciler treats `LOCKED` as a continuously-enforced state. Plan §3. |
-| Q2 | Broker unreachable when an alert arrives — queue or reject? | _unanswered_ — **proposed:** reject. No account state → no snapshot → no evaluation; and rule 3 already calls a 30s-old signal stale, so a queue would release trades at prices that no longer exist. Caveat raised for `action: "close"`. Plan §3. |
-| Q3 | How is `liquid_equity` defined with open positions — mark-to-market or cash only? | _unanswered_ — **proposed:** neither name survives. Mark-to-market is the sizing base *and* the drawdown basis; free cash is the affordability ceiling already in §7. Snapshot carries `total_equity` / `free_balance` / `position_value`. Plan §3. |
-| Q4 | Does editing a risk profile while a position is open apply retroactively? | _unanswered_ — **proposed:** never retroactive to open positions (the system never initiates a trade on its own); gates apply from the next decision. Tightening `max_daily_dd_pct` can trip instantly — UI must warn. Plan §3. |
-| Q5 | Failure mode if Redis is down but Postgres is up? | _unanswered_ — **proposed:** reject all new alerts (unknown kill-switch state must read as `LOCKED`), but keep persisting them, and keep the kill switch + reconciler working off Postgres. Plan §3. |
+On 2026-08-02 the human delegated the decisions explicitly ("you answer, give the best answer").
+They are recorded below as **decisions of record** and are binding until the human overrides any of
+them — which they may do at any time, at the cost of the code change noted in each row.
 
-### New open questions raised in Phase 0 (blocking)
+**Answering them honestly turned up three places where the code did not match the answer.** All
+three were fixed in the same commit rather than left as a doc/code contradiction (`CLAUDE.md` §2).
 
-Surfaced while working through the spec. Flagged, not guessed — see plan §4.
-
-| # | Question | Blocks | Status |
+| # | Question | Decision | Code state |
 |---|---|---|---|
-| OQ-1 | `reason_code` needs a second **pipeline** family (`BROKER_UNAVAILABLE`, `STATE_UNAVAILABLE`, `ACCOUNT_NOT_FOUND`, `INSTRUMENT_UNAVAILABLE`, `INTERNAL_ERROR`) for rejections that happen before the pure engine can run. | P2-1, P3-3 | _unanswered_ |
-| OQ-2 | Rule 1 precedes rule 2, but the account name is inside the payload. Proposed: check a user-level lock pre-parse, account-level lock post-parse; both return `TRADING_LOCKED`. | P2-1 | _unanswered_ |
-| OQ-3 | The fee/slippage buffer as literally specified **fails** §13's property test (worst-case loss came out 12% over budget in the worked example). Closed form `qty = risk_amount / (stop_distance + entry_price × buffer_rate)` is exact. | P2-2, P2-3 | _unanswered_ |
-| OQ-4 | Storing the payload "verbatim" persists the body `secret` in plaintext, against constraint #6. Proposed: redact `secret`, keep `raw_body_sha256` for integrity. | P0-3, P3-3 | _unanswered_ |
-| OQ-5 | Max age for cached instrument filters when the exchange is unreachable at boot — serve stale (suggest 24h cap) or refuse? | P4-1 | _unanswered_ |
-| OQ-6 | `action: "sell"` on spot, where shorting does not exist. Proposed: `sell` reduces/closes a long; short-side stop logic still implemented and tested in the pure engine but unreachable via the spot adapter. | P2-1, P3-2 | _unanswered_ |
+| Q1 | In-flight order when the kill switch fires mid-submission? | **Let it complete; never abandon it.** You cannot un-send an HTTP request, and abandoning it loses the broker order ID — leaving an order at the exchange we have no record of, on a locked account. `LOCKED` is written first, the sweep runs twice, and the reconciler treats `LOCKED` as a continuously-enforced invariant. The race is not won, it is outlasted. | Matches. No change. |
+| Q2 | Broker unreachable — queue or reject? | **Reject.** No account state → no snapshot → no evaluation, and rule 3 already calls a 30s-old signal stale, so a queue would release trades at prices that no longer exist. Queues also fail in bursts: eight signals firing at once after a ten-minute outage would pass exposure caps no single evaluation would have allowed. | **Changed.** The plan named the uncomfortable case — `sell`/`close` are risk-*reducing*, so rejecting one leaves the user holding a position they asked to exit — and said it must be loud. It was a log line. Added `Notifier.undelivered_exit` + `wiring.notify_undelivered_exit`. |
+| Q3 | `liquid_equity` with open positions? | **Neither — the name is deleted.** Mark-to-market `total_equity` is the sizing base *and* the drawdown basis; `free_balance` is the affordability ceiling. Two numbers doing two jobs, each named for what it is. Pleasant side effect: a large unrealized loss shrinks both the sizing base and the drawdown numerator, so risk contracts automatically while losing. | Matches. `liquid_equity` appears nowhere in the code. |
+| Q4 | Does a profile edit apply retroactively? | **Never to open positions; immediately to the next decision.** Resizing an open position would mean SignalGuard submitting an order no signal asked for. Gates (1,3,4,5,7,8,10) use the profile as it stands at evaluation time. `decisions.rule_snapshot` + `version` keep the audit answerable forever. | **Changed.** The one surprising case — tightening `max_daily_dd_pct` re-evaluates against today's *existing* baseline and can block instantly — was specified to need a UI warning and had none. Added to the Risk-profile form. |
+| Q5 | Redis down, Postgres up? | **Reject every new alert, keep recording, keep the kill switch working.** Unknown kill-switch state must read as `LOCKED`; unknown breaker state as `OPEN`; dedupe cannot be guaranteed, and a duplicate is a double order. Ingest degrades to "record and refuse", which is the honest failure. Kill switch, lock reads and reconciliation all work off Postgres. (Companion: **Postgres down → also reject** — no audit trail, no trading.) | Matches. No change. |
+| OQ-1 | A second **pipeline** reason-code family? | **Approved, not folded into `INVALID_PAYLOAD`.** Folding would make the dashboard's rejection breakdown lie about *why* trades were refused, and that breakdown is the product's main diagnostic. | Matches, plus one addition — see OQ-6. |
+| OQ-2 | Rule 1 precedes rule 2, but the account is named inside the payload. | **Confirmed: check the lock twice.** User-level lock pre-parse (the endpoint identifies the user), account-level lock post-parse. Both return `TRADING_LOCKED`, preserving the specified priority. | Matches. No change. |
+| OQ-3 | The fee/slippage buffer as literally specified. | **Closed form approved:** `qty = risk_amount / (stop_distance + entry_price × buffer_rate)`. The literal "subtract the buffer from `risk_amount` first" under-corrects because fees scale with *notional* while `risk_amount` is a slice of *equity* — worked example came out 12% over budget, and **it fails §13's own Hypothesis property test.** The closed form satisfies it by construction; rounding down only adds margin. This is a deliberate, documented deviation from `CLAUDE.md` §7's literal wording. | Matches, and property-tested. No change. |
+| OQ-4 | Storing the payload "verbatim" persists the body `secret`. | **Approved: redact `secret`, keep `raw_body_sha256`.** Constraint #6 outranks the word "verbatim"; the hash preserves what redaction costs — the ability to settle an HMAC dispute. | Matches. No change. |
+| OQ-5 | Max age for cached instrument filters. | **Serve from cache up to 24h, reject beyond it, refresh continuously in the background.** Refusing outright would turn a brief exchange blip into a full user outage; trusting the cache forever would size against filters that have changed. Refresh now runs hourly from the reconciliation cycle. | Matches. No change. |
+| OQ-6 | `action: "sell"` on spot, where shorting does not exist. | **Confirmed:** `buy` opens/increases a long, `sell` and `close` both reduce/close one, and **a `sell` with nothing held is rejected — not read as a short.** Short-side stop arithmetic stays implemented and tested in the pure engine (it costs nothing and is needed the day a futures adapter arrives) but is unreachable through the spot adapter. | **Changed.** An exit on a flat symbol was returning `APPROVED` with quantity 0 — putting "APPROVED" in the decision feed for a signal that placed no order. Now rejects with a new `NO_POSITION_TO_CLOSE` code. |
+
+*Also confirmed:* the §11 UI example ("$10,000 equity, $62,000 entry, $61,000 stop → 0.161 BTC") is
+illustrative and does not match the §7 formula, which gives 0.1 BTC before buffers and 0.0889 with
+the 20bps buffer. The dashboard computes it live rather than hardcoding the number.
 
 ---
 
@@ -323,3 +330,5 @@ Append a line whenever a task changes status, so the history of who-did-what is 
 | 2026-08-01 | V-3 | **Passed for the first time.** Chromium against the live stack: 12/12 checks — all four pages, the live `/ws` handshake, the new trade log, zero console errors. Fixed the one thing it found (a missing favicon 404). → `DONE`. | claude-opus-5 (phase-8) |
 | 2026-08-01 | V-1, V-2 | **Not done, and not claimed as done.** Both are refused by the sandbox network policy: Docker Hub image blobs return 403 to CONNECT, as does `testnet.binance.vision`. V-1 advanced as far as it can here (daemon running, `docker compose config` valid); V-2 not at all. Marked `BLOCKED` with the blocker and the residual risk written out, rather than quietly marked `DONE`. | claude-opus-5 (phase-8) |
 | 2026-08-01 | — | Docs kept in sync in the same commit (`CLAUDE.md` §2): `runbook.md` gained an "is the reconciler actually running?" section, `deploy.md` a post-deploy reconciler check and the new config rows, `.env.example` the two new keys. The runbook's existing reconciler claims became true rather than aspirational. | claude-opus-5 (phase-8) |
+| 2026-08-02 | Q1–Q5, OQ-1…OQ-6 | **All eleven open questions answered and recorded as decisions of record**, on the human's explicit delegation. They had been *adopted by default* since Phase 1 — coherent and tested, but never confirmed, which meant a wrong assumption would have kept every test green while the behaviour was wrong. | claude-opus-5 (phase-8) |
+| 2026-08-02 | Q2, Q4, OQ-6 | **Answering them honestly exposed three code/spec mismatches, all fixed in the same commit.** (1) OQ-6: an exit on a flat symbol returned `APPROVED` with qty 0, putting "APPROVED" in the decision feed for a signal that placed no order — now rejects with a new `NO_POSITION_TO_CLOSE` code. (2) Q2: a close signal rejected for an unreachable broker was a log line, though the plan specified it must be loud — now pushes `undelivered_exit` to Telegram. (3) Q4: the Risk-profile form gained the warning that tightening `max_daily_dd_pct` is measured against today's existing baseline and can block instantly. +4 tests. | claude-opus-5 (phase-8) |

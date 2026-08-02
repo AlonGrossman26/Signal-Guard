@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from signalguard import realtime
 from signalguard.config import Settings, get_settings
 from signalguard.db.models import BrokerAccount, User
-from signalguard.enums import Verdict
+from signalguard.enums import ReasonCode, Verdict
 from signalguard.execution.base import BrokerAdapter, BrokerError
 from signalguard.execution.binance_testnet import BinanceTestnetAdapter
 from signalguard.execution.executor import execute_decision
@@ -43,6 +43,13 @@ if TYPE_CHECKING:
     from signalguard.ingress.pipeline import PipelineResult
 
 logger = logging.getLogger(__name__)
+
+# Rejections that mean "we could not act", as opposed to "we decided not to".
+# An exit blocked by one of these leaves the user exposed, so it is escalated
+# rather than merely recorded (plan §3, Q2).
+_UNDELIVERABLE = frozenset(
+    {ReasonCode.BROKER_UNAVAILABLE, ReasonCode.STATE_UNAVAILABLE}
+)
 
 
 class BrokerSession:
@@ -224,6 +231,54 @@ async def _publish_orders(
                 "avg_fill_price": order.avg_fill_price,
             },
         )
+
+
+async def notify_undelivered_exit(
+    session: AsyncSession,
+    evaluation: PipelineResult,
+    action: str,
+) -> bool:
+    """Alert loudly when an *exit* signal could not be delivered (plan §3, Q2).
+
+    Q2's answer is "reject when the broker is unreachable", and that answer has
+    one uncomfortable case, named in the plan rather than hidden: `sell` and
+    `close` are risk-**reducing**. Rejecting one leaves the user holding a
+    position they explicitly asked to exit, and they will not find out from a
+    rejection row on a dashboard they are not looking at.
+
+    So this case gets pushed, not logged. It is the difference between "the
+    system behaved correctly" and "the user knows they are still exposed".
+    """
+    decision = evaluation.decision
+    if decision.verdict is not Verdict.REJECTED:
+        return False
+    if decision.reason_code not in _UNDELIVERABLE:
+        return False
+    if action.lower() not in ("sell", "close"):
+        return False
+
+    account = evaluation.account
+    if account is None:
+        return False
+
+    notifier = await notifier_for_account(session, account, get_settings())
+    if notifier is None:
+        logger.critical(
+            "EXIT SIGNAL NOT DELIVERED and no notifier is configured — the user "
+            "is still holding a position they asked to close",
+            extra={
+                "broker_account_id": str(account.id),
+                "reason_code": decision.reason_code.value,
+            },
+        )
+        return False
+
+    try:
+        return await notifier.undelivered_exit(
+            account.label, decision.reason_code.value
+        )
+    finally:
+        await notifier.aclose()
 
 
 async def notifier_for_account(
