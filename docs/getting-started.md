@@ -234,9 +234,7 @@ in units before any real signal arrives.
 Still on the Setup page, use the **test button**. This runs the risk pipeline and returns the
 decision **without ever touching the exchange**, so nothing can reach your broker by accident.
 
-The best thing to check here is that **your payload is well-formed and your stop is on the right
-side**. Send a *limit* order with the stop above your entry price and you get exactly what you'd
-hope for:
+Send a *limit* order with the stop above your entry and you get exactly what you'd hope for:
 
 ```
 NO_STOP_LOSS — long stop 63000.00 must be below entry 62000.00
@@ -244,21 +242,40 @@ NO_STOP_LOSS — long stop 63000.00 must be below entry 62000.00
 
 That is the check worth rehearsing before a live signal does it for you.
 
-**Know what this endpoint cannot tell you.** Because it deliberately never contacts the broker, it
-has no account data, and that shapes the answers:
+**It answers what-if questions too.** Add `?equity=` and `?price=` to ask "with $100,000 and BTC at
+$62,000, what would this signal do?":
 
-- **It will never return `APPROVED`.** With no equity figure there is no daily-drawdown baseline, so
-  rule 8 fails closed and a perfectly valid signal comes back `DAILY_DRAWDOWN_HIT — no valid equity
-  baseline`. That is the fail-closed design working, not your signal being wrong.
-- **Market orders always report `NO_STOP_LOSS — no reference price available`.** A market order has
-  no price of its own, and fetching the current price is broker work. Use `order_type: "limit"` with
-  a `limit_price` when testing, since a limit order carries its own price.
-- **A symbol you haven't traded reports `INSTRUMENT_UNAVAILABLE`, not `SYMBOL_NOT_ALLOWED`.** The
-  exchange-filter lookup happens before the rule chain, so an uncached symbol is refused before the
-  allowlist is ever consulted. Both are rejections; the reason code just names the earlier cause.
+```
+POST /webhook/<TOKEN>/test?equity=100000&price=62000
+→ APPROVED, computed_qty 0.24248
+```
 
-So: use `/test` for payload and stop-side mistakes, and use a real signal (step 11) to see approvals
-and sizing.
+That is the same question the Risk-profile page's live preview answers, and it's the fastest way to
+sanity-check your sizing before real money — well, real *fake* money — is involved.
+
+Every response carries an `assumptions` block showing exactly what it used:
+
+```json
+"assumptions": {
+  "equity": "100000",
+  "equity_source": "your ?equity= override",
+  "reference_price": "62000",
+  "simulated": true,
+  "note": "No broker was contacted — §8 requires this endpoint never to."
+}
+```
+
+Omit the parameters and it uses your account's last reconciled equity — real data, no network call.
+On a brand-new account with nothing reconciled yet it assumes $10,000 and **says so** in
+`equity_source`, so a number on screen is never unexplained.
+
+Two things worth knowing:
+
+- **A market order needs a price.** It has none of its own, and `/test` will not call the exchange
+  to find one. Without `?price=` you get `PRICE_UNAVAILABLE`, which says plainly that the price was
+  the problem and your stop was fine.
+- **Nothing you do here touches your real risk state.** A simulation never writes your daily
+  drawdown baseline, never places an order, and never contacts the broker. Experiment freely.
 
 ---
 
@@ -336,8 +353,9 @@ what you want.
 | Every signal rejects `SYMBOL_NOT_ALLOWED` | Empty allowlist (default-deny) | Add `BTCUSDT` on the Risk profile page |
 | Every signal rejects `INSTRUMENT_UNAVAILABLE` | Exchange filters not cached yet | The reconciler fetches them within ~15s of a working broker account existing. Check `docker compose logs api` for `Could not build a broker adapter` — usually wrong API keys |
 | Every signal rejects `BROKER_UNAVAILABLE` | The API can't reach the exchange | Check your keys, and that outbound HTTPS to `testnet.binance.vision` isn't blocked |
-| Signal rejects `NO_STOP_LOSS` on a market order | Stop on the wrong side, too close to entry, or no reference price | Buy stops go *below* entry, at least 0.1% away. On the **`/test`** endpoint this is expected for market orders — see step 10 |
-| `/test` never returns `APPROVED` | Expected — it has no broker data, so there is no equity baseline | Use a real signal (step 11) to see approvals and sizing |
+| Signal rejects `NO_STOP_LOSS` | Stop on the wrong side of entry, or too close to it | Buy stops go *below* entry, at least 0.1% away |
+| Signal rejects `PRICE_UNAVAILABLE` | A market order with no price to size against | On `/test`, add `?price=`. Live, it means the exchange price lookup failed — check the broker account |
+| Signal rejects `NO_POSITION_TO_CLOSE` | A `sell`/`close` for a symbol you do not hold | Expected — there was nothing to close |
 
 The full triage guide — including the kill switch, backups and rollback — is in
 [`runbook.md`](./runbook.md).

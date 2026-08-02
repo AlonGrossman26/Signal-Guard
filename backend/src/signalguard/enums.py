@@ -60,6 +60,11 @@ class ReasonCode(StrEnum):
     # either. It gets its own code because recording it as APPROVED would put
     # "APPROVED" on the dashboard for a signal that placed no order (OQ-6).
     NO_POSITION_TO_CLOSE = "NO_POSITION_TO_CLOSE"
+    # A MARKET order we could not price. Rule 6 reaches the same rejection —
+    # a stop cannot be validated against a price we do not have — but reports it
+    # as NO_STOP_LOSS, which blames a stop that was perfectly fine and sends the
+    # user to fix the wrong thing. Same refusal, honest cause (F-1).
+    PRICE_UNAVAILABLE = "PRICE_UNAVAILABLE"
 
     @property
     def is_pipeline_failure(self) -> bool:

@@ -20,15 +20,15 @@ from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Annotated, Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from signalguard import realtime
 from signalguard.config import Settings, get_settings
-from signalguard.db.models import Alert
+from signalguard.db.models import Alert, BrokerAccount, EquitySnapshot, Position
 from signalguard.db.session import get_session
-from signalguard.enums import ParseStatus, ReasonCode
+from signalguard.enums import OrderType, ParseStatus, ReasonCode
 from signalguard.ingress import dedupe
 from signalguard.ingress.auth import (
     SIGNATURE_HEADER,
@@ -37,7 +37,12 @@ from signalguard.ingress.auth import (
     authenticate,
     resolve_endpoint,
 )
-from signalguard.ingress.pipeline import PipelineResult, evaluate_alert
+from signalguard.ingress.pipeline import (
+    AccountStateProvider,
+    PipelineResult,
+    ReferencePriceProvider,
+    evaluate_alert,
+)
 from signalguard.ingress.ratelimit import RateLimiter
 from signalguard.ingress.schema import (
     MAX_BODY_BYTES,
@@ -47,6 +52,7 @@ from signalguard.ingress.schema import (
     redact_payload,
 )
 from signalguard.redis_client import get_redis
+from signalguard.risk.types import OpenPosition
 from signalguard.wiring import BrokerSession, execute_approved, notify_undelivered_exit
 
 logger = logging.getLogger(__name__)
@@ -86,20 +92,101 @@ def _extract_body_secret(raw_body: bytes) -> str | None:
     return None
 
 
-async def _no_broker_state(_account: Any) -> tuple[Decimal, Decimal, tuple[()]]:
-    """State provider for the `/test` endpoint, which never touches the broker.
+# What `/test` assumes when it has nothing better. Matches the worked example in
+# CLAUDE.md §11 so the numbers a user sees here line up with the documentation.
+DEFAULT_SIM_EQUITY = Decimal("10000")
 
-    §8 is explicit that `/test` runs the full risk pipeline **without touching
-    the broker**, so there is no account state to fetch and this is not a stub —
-    it is the correct behaviour for that endpoint. The live path uses
-    `BrokerSession` instead.
 
-    It returns zeroed equity rather than raising, so the whole rule chain still
-    runs and the user sees which rule their payload trips. What it cannot do is
-    produce a realistic size, so `/test` reports sizing against zero equity — the
-    dashboard's Risk-profile page is where a user previews real sizing.
+def _simulated_state_provider(
+    session: AsyncSession, equity_override: Decimal | None
+) -> AccountStateProvider:
+    """Account state for `/test`, assembled **without contacting the broker**.
+
+    §8 requires `/test` to run the full pipeline without touching the broker,
+    and the original reading of that was "hand the engine zeros". That was
+    technically compliant and practically useless: zero equity means a zero risk
+    budget, so sizing rounded to nothing and **no signal could ever come back
+    APPROVED** — the endpoint could only ever show you failures (F-1).
+
+    Reading our *own* tables is not touching the broker. The reconciler keeps
+    `equity_snapshots` and `positions` current, so this reflects the account as
+    of the last cycle — real numbers, one cycle stale, and no network call. When
+    there is no cached state yet (a brand-new account), it falls back to an
+    explicit override or a documented default, and the response says which.
     """
-    return Decimal("0"), Decimal("0"), ()
+
+    async def provider(
+        account: BrokerAccount,
+    ) -> tuple[Decimal, Decimal, tuple[OpenPosition, ...]]:
+        latest = (
+            await session.execute(
+                select(EquitySnapshot)
+                .where(EquitySnapshot.broker_account_id == account.id)
+                .order_by(EquitySnapshot.taken_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+
+        rows = (
+            await session.execute(
+                select(Position).where(
+                    Position.broker_account_id == account.id, Position.qty != 0
+                )
+            )
+        ).scalars().all()
+        positions = tuple(
+            OpenPosition(
+                symbol=p.symbol,
+                qty=p.qty,
+                avg_entry=p.avg_entry,
+                mark_price=p.mark_price if p.mark_price is not None else p.avg_entry,
+            )
+            for p in rows
+        )
+
+        if equity_override is not None:
+            equity = free = equity_override
+        elif latest is not None and latest.equity > 0:
+            equity = latest.equity
+            free = latest.free_balance if latest.free_balance is not None else latest.equity
+        else:
+            equity = free = DEFAULT_SIM_EQUITY
+
+        return equity, free, positions
+
+    return provider
+
+
+def _simulated_price_provider(
+    session: AsyncSession, price_override: Decimal | None
+) -> ReferencePriceProvider:
+    """Reference price for `/test`, again without contacting the broker.
+
+    A MARKET order carries no price of its own, so with nothing here rule 6
+    rejected every market-order test with `NO_STOP_LOSS — no reference price
+    available`. Accurate in its detail and badly misleading in its code: it says
+    "your stop is wrong" when the stop was fine (F-1).
+
+    Order of preference: an explicit override, then the last mark price the
+    reconciler cached for that symbol. Still None if we have neither, which is
+    honest — and the endpoint now says so in plain words rather than blaming the
+    stop.
+    """
+
+    async def provider(account: BrokerAccount, symbol: str) -> Decimal | None:
+        if price_override is not None:
+            return price_override
+        cached = (
+            await session.execute(
+                select(Position.mark_price).where(
+                    Position.broker_account_id == account.id,
+                    Position.symbol == symbol,
+                )
+            )
+        ).scalar_one_or_none()
+        return cached
+
+    return provider
 
 
 async def _dedupe_window_for(session: AsyncSession, user_id: uuid.UUID) -> int:
@@ -296,11 +383,20 @@ async def test_webhook(
     response: Response,
     session: Annotated[AsyncSession, Depends(get_session)],
     settings: Annotated[Settings, Depends(get_settings)],
+    equity: Annotated[Decimal | None, Query(gt=0)] = None,
+    price: Annotated[Decimal | None, Query(gt=0)] = None,
 ) -> dict[str, Any]:
     """Run the full risk pipeline and return the decision. Never touches the broker.
 
-    First-class, not a debug hook: it is how a user finds out their stop is on
-    the wrong side *before* a live signal does it for them.
+    First-class, not a debug hook (§8): it is how a user finds out their stop is
+    on the wrong side *before* a live signal does it for them.
+
+    `equity` and `price` let you ask a what-if — "with $10,000 and BTC at
+    $62,000, what would this signal do?" — which is the same question the
+    Risk-profile page's live preview answers (§11). Omit them and the endpoint
+    uses the account's last reconciled state, which is real data and involves no
+    network call. Whatever it used is echoed back under `assumptions`, so a
+    number on screen is never unexplained.
     """
     code, body, alert, payload_data, payload_error, is_duplicate = await _handle(
         request, endpoint_id, session, settings, is_test=True
@@ -309,17 +405,24 @@ async def test_webhook(
         response.status_code = code
         return body
 
+    state_provider = _simulated_state_provider(session, equity)
     result = await evaluate_alert(
         session,
         alert=alert,
         payload_data=payload_data,
         payload_error=payload_error,
         is_duplicate=is_duplicate,
-        account_state_provider=_no_broker_state,
+        account_state_provider=state_provider,
+        reference_price_provider=_simulated_price_provider(session, price),
         now=datetime.now(UTC),
         is_test=True,
     )
     await session.commit()
+
+    price_provider = _simulated_price_provider(session, price)
+    assumptions = await _describe_assumptions(
+        result, state_provider, price_provider, equity, price
+    )
 
     return {
         "verdict": result.decision.verdict.value,
@@ -332,7 +435,78 @@ async def test_webhook(
         ),
         "latency_ms": result.latency_ms,
         "alert_id": str(alert.id),
+        "assumptions": assumptions,
     }
+
+
+async def _describe_assumptions(
+    result: PipelineResult,
+    state_provider: AccountStateProvider,
+    price_provider: ReferencePriceProvider,
+    equity_override: Decimal | None,
+    price_override: Decimal | None,
+) -> dict[str, Any]:
+    """Explain the inputs `/test` used, so no number on screen is unexplained.
+
+    A simulator that will not show its inputs is one you cannot trust: "0.161
+    BTC" means nothing until you know what equity and price produced it.
+
+    The values are re-derived from the same providers the evaluation used rather
+    than read back off the decision, because a *rejected* decision often never
+    records them — and those are exactly the runs a user is trying to understand.
+    """
+    account = result.account
+    if account is None:
+        return {"note": "evaluation stopped before account state was needed"}
+
+    equity, free_balance, positions = await state_provider(account)
+    used_default = equity_override is None and equity == DEFAULT_SIM_EQUITY
+
+    if equity_override is not None:
+        equity_source = "your ?equity= override"
+    elif used_default:
+        equity_source = (
+            f"an assumed default of {DEFAULT_SIM_EQUITY} — this account has no "
+            "reconciled equity yet. Pass ?equity= to test against your own number."
+        )
+    else:
+        equity_source = "your account's last reconciled equity (no broker call)"
+
+    assumptions: dict[str, Any] = {
+        "equity": str(equity),
+        "free_balance": str(free_balance),
+        "open_positions": len(positions),
+        "equity_source": equity_source,
+        "simulated": True,
+        "note": "No broker was contacted — §8 requires this endpoint never to.",
+    }
+
+    alert_input = result.alert_input
+    reference: Decimal | None = None
+    if alert_input is not None:
+        if alert_input.order_type is OrderType.LIMIT:
+            reference = alert_input.limit_price
+            price_source = "the alert's own limit_price"
+        else:
+            reference = await price_provider(account, alert_input.symbol)
+            price_source = (
+                "your ?price= override" if price_override is not None
+                else "the last mark price cached for this symbol"
+            )
+    else:
+        price_source = "not reached"
+
+    if reference is None and alert_input is not None:
+        # The specific case that used to masquerade as NO_STOP_LOSS.
+        price_source = (
+            "none available — a MARKET order carries no price of its own and "
+            "this account has no cached mark price for the symbol. Pass ?price= "
+            "to test a market order, or send order_type=limit with a limit_price."
+        )
+
+    assumptions["reference_price"] = str(reference) if reference is not None else None
+    assumptions["price_source"] = price_source
+    return assumptions
 
 
 async def _evaluate_in_background(
