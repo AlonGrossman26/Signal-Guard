@@ -264,6 +264,36 @@ and `execution/` still imports no HTTP handling.
 | F-1 | `/webhook/{id}/test` was weaker than §8 intends | ingress | claude-opus-5 (phase-8) | DONE | — | Found by walking the getting-started guide as a new user. §8 calls this "the feature users will rely on most"; it was handed **zeros** for account state, on the reading that "must not touch the broker" meant "must know nothing". Consequences: it could **never return `APPROVED`** (zero equity → zero risk budget → sizing rounds away), market orders always reported `NO_STOP_LOSS` (blaming a stop that was fine when the real problem was having no price), and an un-allowed symbol reported `INSTRUMENT_UNAVAILABLE` (naming infrastructure instead of the user's mistake). **Fix:** reading our *own* tables is not touching the broker — `/test` now uses the account's last reconciled equity and positions, accepts `?equity=`/`?price=` what-if overrides, and returns an `assumptions` block so no number on screen is unexplained. Two of the three fixes apply to **production too**, not just `/test`: the symbol allowlist is now checked before the exchange-filter lookup (a symbol rule 5 will reject never needs sizing data), and a MARKET order with no obtainable price now rejects `PRICE_UNAVAILABLE` instead of blaming the stop. 8 new tests, including one asserting a genuine wrong-side stop is *still* `NO_STOP_LOSS` so the relabelling did not over-reach. |
 | F-2 | `/test` was writing real drawdown baselines | ingress | claude-opus-5 (phase-8) | DONE | F-1 | **Found while fixing F-1**, by a test that started seeing a database-round-tripped value where it expected a constant. A `/test` run evaluates against a *simulated* equity figure, and the P8-6 baseline-persistence fix was writing that figure as the day's real drawdown baseline. Every genuine drawdown check for the rest of the session would then have been measured against a number the user invented while experimenting — silently blocking live trading, or hiding a real drawdown. `load_drawdown` now takes `persist_baseline`, off for test runs. A simulation must leave no mark on state the risk engine reads; there is a test asserting exactly that. |
 
+### Phase 9-11 — v2 direction (proposed 2026-08-02, needs sign-off before Phase 12)
+
+Full reasoning, evidence and sources in [`docs/product-direction.md`](./docs/product-direction.md).
+
+**The short version.** v1 competes in a crowded category (TradersPost alone: 40,000+ traders, five
+years in). Research found an adjacent problem that is larger, already monetised, and much better
+matched to what this codebase *is*: prop-firm evaluations fail at **80-95%**, and **71-78.7% of
+those failures are daily-drawdown breaches** — with the industry's own analysis saying most come
+from misreading a **measurement mechanic** (equity vs balance, trailing vs static, server-time
+resets) rather than from a bad trade. Traders pay $15-$700 per attempt and average 2-4 attempts.
+
+That is not a trading problem, it is a rule-enforcement and measurement problem — and roughly **60%
+of it is already built here**: the DST-correct daily session, the equity/balance split that Q3
+forced us to name properly, the continuously-enforced kill switch, and the append-only audit of what
+your limits were at the moment you were stopped.
+
+**Ordered so the cheap, reversible work comes first and the scope-breaking work comes last.**
+
+| ID | Task | Layer | Owner | Status | Depends on | Notes |
+|---|---|---|---|---|---|---|
+| P9-1 | Prove what already exists before building on it | infra | — | TODO | V-1, V-2 | **A gate, not a formality.** Every claim in the v2 plan rests on a system that has never placed a live order. Close V-2 and V-1, then run it for a week against testnet with a real strategy: a real fill reconciled, a real trade recorded, the equity curve populating. Do not start P10 until this passes. |
+| P10-1 | Prop rule model in the pure engine | risk | — | TODO | P9-1 | `max_drawdown` (static / trailing / **EOD-trailing** — the three measurement mechanics traders breach on), the consistency rule (one day ≤30-50% of total profit; `trades` already holds realized PnL with timestamps), and news-blackout windows. Plus a `prop_profiles` table modelling one firm's rule set, versioned and snapshotted into decisions exactly as `risk_profiles` is. **No new scope and no I/O** — this is pure `risk/` work, table-driven tests with the boundary exactly at the threshold per §13. |
+| P11-1 | Breach simulator — "would this have breached?" | risk/api | — | TODO | P10-1 | Replay a firm's rule set over an equity history and report where it would have breached and why. **Needs no broker adapter at all** — it runs through the existing pure engine, which is only possible because `risk/` has zero I/O and takes time as an input. A competitor whose risk logic is tangled with execution cannot cheaply copy this. Simultaneously the cheapest build, the strongest differentiator, and the **demand test**: ship it free, and if prop traders will not use a free tool that explains their failures, that is the answer before a year is spent on adapters. |
+
+### Blocking decision for Phase 12+
+
+| # | Question | Blocks | Status |
+|---|---|---|---|
+| SQ-1 | **Does v2 scope open to a second broker?** Prop accounts live on futures platforms (Tradovate, Rithmic) or MT5. `CLAUDE.md` §13 currently rules out futures, MetaTrader and multiple brokers, and **that line stands unchanged until the human says otherwise.** Without one of them, Phases 12-13 (shadow guard, then routing) cannot exist. Secondary: which first — futures reaches the largest prop population, MT5 the forex prop market and the most existing competition. Note Phase 12 is smaller than it looks: a read-only guard needs only `get_account_state`, `cancel_all_orders` and `close_all_positions`, all three already on the `BrokerAdapter` interface. | P12, P13 | **unanswered** |
+
 ### Accepted deviations (decided, not gaps — do not "fix" without asking)
 
 | ID | Item | Decision |
@@ -341,3 +371,4 @@ Append a line whenever a task changes status, so the history of who-did-what is 
 | 2026-08-02 | Q2, Q4, OQ-6 | **Answering them honestly exposed three code/spec mismatches, all fixed in the same commit.** (1) OQ-6: an exit on a flat symbol returned `APPROVED` with qty 0, putting "APPROVED" in the decision feed for a signal that placed no order — now rejects with a new `NO_POSITION_TO_CLOSE` code. (2) Q2: a close signal rejected for an unreachable broker was a log line, though the plan specified it must be loud — now pushes `undelivered_exit` to Telegram. (3) Q4: the Risk-profile form gained the warning that tightening `max_daily_dd_pct` is measured against today's existing baseline and can block instantly. +4 tests. | claude-opus-5 (phase-8) |
 | 2026-08-02 | F-1 | Fixed on the human's instruction. `/test` now uses real cached account state (no broker call), accepts `?equity=`/`?price=` what-ifs, and explains its assumptions. Two of the three fixes — allowlist-before-instrument-lookup, and `PRICE_UNAVAILABLE` instead of a misleading `NO_STOP_LOSS` — improve **production** behaviour, not just the test endpoint. 8 new tests. → `DONE`. | claude-opus-5 (phase-8) |
 | 2026-08-02 | F-2 | **New bug found while fixing F-1:** `/test` was persisting its *simulated* equity as the day's real drawdown baseline, which would have let a what-if silently set the number every real drawdown check is measured against. Fixed and pinned with a test that a simulation leaves no trace. → `DONE`. | claude-opus-5 (phase-8) |
+| 2026-08-02 | P9-1, P10-1, P11-1, SQ-1 | Filed a v2 direction after researching where this product could be worth more: prop-firm rule enforcement. Evidence in `docs/product-direction.md`. Phases 9-11 need **no scope change** and can start now; Phase 12+ is blocked on SQ-1 because it needs a second broker, which `CLAUDE.md` §13 still forbids — §13 deliberately left unchanged rather than edited unilaterally. | claude-opus-5 (phase-8) |

@@ -68,6 +68,7 @@ PowerShell note: `&&` is a parser error in PowerShell 5.1. Chain with `A; if ($?
 | [`PROJECT_MANAGEMENT.md`](./PROJECT_MANAGEMENT.md) | The task board — status of every task, and the answered open questions. |
 | [`docs/runbook.md`](./docs/runbook.md) | The 3am runbook. Something is broken and you need it fixed now. |
 | [`docs/deploy.md`](./docs/deploy.md) | Deployment reference: config, migrations, health, ops. |
+| [`docs/product-direction.md`](./docs/product-direction.md) | Where this goes after v1, and the evidence for it. A proposal — §13 scope is unchanged. |
 | [`docs/phase-0-plan.md`](./docs/phase-0-plan.md) | The original plan: assumptions, data model, and the reasoning behind each decision. |
 
 ---
