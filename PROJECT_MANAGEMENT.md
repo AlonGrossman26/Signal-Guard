@@ -59,31 +59,38 @@ If `CLAUDE.md` is the *rules* of the project, this file is the *state* of the pr
 
 ---
 
-## Open questions — must be answered before Phase 1 code (CLAUDE.md §15)
+## Open questions — ANSWERED (2026-08-02)
 
-These gate the whole project. Until the human answers them, tasks that depend on them
-stay `BLOCKED`. Record answers here as they arrive.
+**All eleven are now decided.** They had been recorded as *adopted by default* — the agent's own
+recommendations, used as working assumptions because the human never said yes or no. That is a
+worse state than it looks: the engine was coherent and thoroughly tested **against those
+assumptions**, so if one had been wrong the tests would have kept passing while the behaviour was
+wrong. No amount of testing finds that; only a decision does.
 
-| # | Question | Answer |
-|---|---|---|
-| Q1 | In-flight order when the kill switch fires mid-submission? | _unanswered_ — **proposed:** let it complete, never abandon it (an abandoned request loses the order ID → orphan position). `LOCKED` written first, sweep runs twice, and the reconciler treats `LOCKED` as a continuously-enforced state. Plan §3. |
-| Q2 | Broker unreachable when an alert arrives — queue or reject? | _unanswered_ — **proposed:** reject. No account state → no snapshot → no evaluation; and rule 3 already calls a 30s-old signal stale, so a queue would release trades at prices that no longer exist. Caveat raised for `action: "close"`. Plan §3. |
-| Q3 | How is `liquid_equity` defined with open positions — mark-to-market or cash only? | _unanswered_ — **proposed:** neither name survives. Mark-to-market is the sizing base *and* the drawdown basis; free cash is the affordability ceiling already in §7. Snapshot carries `total_equity` / `free_balance` / `position_value`. Plan §3. |
-| Q4 | Does editing a risk profile while a position is open apply retroactively? | _unanswered_ — **proposed:** never retroactive to open positions (the system never initiates a trade on its own); gates apply from the next decision. Tightening `max_daily_dd_pct` can trip instantly — UI must warn. Plan §3. |
-| Q5 | Failure mode if Redis is down but Postgres is up? | _unanswered_ — **proposed:** reject all new alerts (unknown kill-switch state must read as `LOCKED`), but keep persisting them, and keep the kill switch + reconciler working off Postgres. Plan §3. |
+On 2026-08-02 the human delegated the decisions explicitly ("you answer, give the best answer").
+They are recorded below as **decisions of record** and are binding until the human overrides any of
+them — which they may do at any time, at the cost of the code change noted in each row.
 
-### New open questions raised in Phase 0 (blocking)
+**Answering them honestly turned up three places where the code did not match the answer.** All
+three were fixed in the same commit rather than left as a doc/code contradiction (`CLAUDE.md` §2).
 
-Surfaced while working through the spec. Flagged, not guessed — see plan §4.
-
-| # | Question | Blocks | Status |
+| # | Question | Decision | Code state |
 |---|---|---|---|
-| OQ-1 | `reason_code` needs a second **pipeline** family (`BROKER_UNAVAILABLE`, `STATE_UNAVAILABLE`, `ACCOUNT_NOT_FOUND`, `INSTRUMENT_UNAVAILABLE`, `INTERNAL_ERROR`) for rejections that happen before the pure engine can run. | P2-1, P3-3 | _unanswered_ |
-| OQ-2 | Rule 1 precedes rule 2, but the account name is inside the payload. Proposed: check a user-level lock pre-parse, account-level lock post-parse; both return `TRADING_LOCKED`. | P2-1 | _unanswered_ |
-| OQ-3 | The fee/slippage buffer as literally specified **fails** §13's property test (worst-case loss came out 12% over budget in the worked example). Closed form `qty = risk_amount / (stop_distance + entry_price × buffer_rate)` is exact. | P2-2, P2-3 | _unanswered_ |
-| OQ-4 | Storing the payload "verbatim" persists the body `secret` in plaintext, against constraint #6. Proposed: redact `secret`, keep `raw_body_sha256` for integrity. | P0-3, P3-3 | _unanswered_ |
-| OQ-5 | Max age for cached instrument filters when the exchange is unreachable at boot — serve stale (suggest 24h cap) or refuse? | P4-1 | _unanswered_ |
-| OQ-6 | `action: "sell"` on spot, where shorting does not exist. Proposed: `sell` reduces/closes a long; short-side stop logic still implemented and tested in the pure engine but unreachable via the spot adapter. | P2-1, P3-2 | _unanswered_ |
+| Q1 | In-flight order when the kill switch fires mid-submission? | **Let it complete; never abandon it.** You cannot un-send an HTTP request, and abandoning it loses the broker order ID — leaving an order at the exchange we have no record of, on a locked account. `LOCKED` is written first, the sweep runs twice, and the reconciler treats `LOCKED` as a continuously-enforced invariant. The race is not won, it is outlasted. | Matches. No change. |
+| Q2 | Broker unreachable — queue or reject? | **Reject.** No account state → no snapshot → no evaluation, and rule 3 already calls a 30s-old signal stale, so a queue would release trades at prices that no longer exist. Queues also fail in bursts: eight signals firing at once after a ten-minute outage would pass exposure caps no single evaluation would have allowed. | **Changed.** The plan named the uncomfortable case — `sell`/`close` are risk-*reducing*, so rejecting one leaves the user holding a position they asked to exit — and said it must be loud. It was a log line. Added `Notifier.undelivered_exit` + `wiring.notify_undelivered_exit`. |
+| Q3 | `liquid_equity` with open positions? | **Neither — the name is deleted.** Mark-to-market `total_equity` is the sizing base *and* the drawdown basis; `free_balance` is the affordability ceiling. Two numbers doing two jobs, each named for what it is. Pleasant side effect: a large unrealized loss shrinks both the sizing base and the drawdown numerator, so risk contracts automatically while losing. | Matches. `liquid_equity` appears nowhere in the code. |
+| Q4 | Does a profile edit apply retroactively? | **Never to open positions; immediately to the next decision.** Resizing an open position would mean SignalGuard submitting an order no signal asked for. Gates (1,3,4,5,7,8,10) use the profile as it stands at evaluation time. `decisions.rule_snapshot` + `version` keep the audit answerable forever. | **Changed.** The one surprising case — tightening `max_daily_dd_pct` re-evaluates against today's *existing* baseline and can block instantly — was specified to need a UI warning and had none. Added to the Risk-profile form. |
+| Q5 | Redis down, Postgres up? | **Reject every new alert, keep recording, keep the kill switch working.** Unknown kill-switch state must read as `LOCKED`; unknown breaker state as `OPEN`; dedupe cannot be guaranteed, and a duplicate is a double order. Ingest degrades to "record and refuse", which is the honest failure. Kill switch, lock reads and reconciliation all work off Postgres. (Companion: **Postgres down → also reject** — no audit trail, no trading.) | Matches. No change. |
+| OQ-1 | A second **pipeline** reason-code family? | **Approved, not folded into `INVALID_PAYLOAD`.** Folding would make the dashboard's rejection breakdown lie about *why* trades were refused, and that breakdown is the product's main diagnostic. | Matches, plus one addition — see OQ-6. |
+| OQ-2 | Rule 1 precedes rule 2, but the account is named inside the payload. | **Confirmed: check the lock twice.** User-level lock pre-parse (the endpoint identifies the user), account-level lock post-parse. Both return `TRADING_LOCKED`, preserving the specified priority. | Matches. No change. |
+| OQ-3 | The fee/slippage buffer as literally specified. | **Closed form approved:** `qty = risk_amount / (stop_distance + entry_price × buffer_rate)`. The literal "subtract the buffer from `risk_amount` first" under-corrects because fees scale with *notional* while `risk_amount` is a slice of *equity* — worked example came out 12% over budget, and **it fails §13's own Hypothesis property test.** The closed form satisfies it by construction; rounding down only adds margin. This is a deliberate, documented deviation from `CLAUDE.md` §7's literal wording. | Matches, and property-tested. No change. |
+| OQ-4 | Storing the payload "verbatim" persists the body `secret`. | **Approved: redact `secret`, keep `raw_body_sha256`.** Constraint #6 outranks the word "verbatim"; the hash preserves what redaction costs — the ability to settle an HMAC dispute. | Matches. No change. |
+| OQ-5 | Max age for cached instrument filters. | **Serve from cache up to 24h, reject beyond it, refresh continuously in the background.** Refusing outright would turn a brief exchange blip into a full user outage; trusting the cache forever would size against filters that have changed. Refresh now runs hourly from the reconciliation cycle. | Matches. No change. |
+| OQ-6 | `action: "sell"` on spot, where shorting does not exist. | **Confirmed:** `buy` opens/increases a long, `sell` and `close` both reduce/close one, and **a `sell` with nothing held is rejected — not read as a short.** Short-side stop arithmetic stays implemented and tested in the pure engine (it costs nothing and is needed the day a futures adapter arrives) but is unreachable through the spot adapter. | **Changed.** An exit on a flat symbol was returning `APPROVED` with quantity 0 — putting "APPROVED" in the decision feed for a signal that placed no order. Now rejects with a new `NO_POSITION_TO_CLOSE` code. |
+
+*Also confirmed:* the §11 UI example ("$10,000 equity, $62,000 entry, $61,000 stop → 0.161 BTC") is
+illustrative and does not match the §7 formula, which gives 0.1 BTC before buffers and 0.0889 with
+the 20bps buffer. The dashboard computes it live rather than hardcoding the number.
 
 ---
 
@@ -101,26 +108,37 @@ Two decisions were needed before implementing the Phase 7 hardening; the human a
 Seeded from the phases in `CLAUDE.md` §14. Add rows as work is broken down further; give
 each a unique ID.
 
-**Status (revised 2026-08-01 after a full code audit — see AUDIT-1 and Phase 8).**
-Phases 0–7 are `DONE` as written: every module in the proposed layout exists, and the
-checks pass — **367 backend tests green** against live Postgres + Redis, `ruff` clean,
-`mypy --strict` clean over 56 files, frontend `tsc --noEmit` and `npm run build` both clean.
+**Status (2026-08-01, after AUDIT-1 found the gaps and Phase 8 closed them).**
 
-**But the phases were built as parts and never joined into a working pipeline.** The audit
-found that the ingress layer still uses the Phase 3 placeholder broker
-(`ingress/routes.py:82` `_null_account_state`) and never calls the execution layer at all:
-an `APPROVED` decision is persisted and published to the dashboard, and **no order is ever
-submitted**. The reconciliation loop, the `trades` table, the `circuit_breaker_state` writer
-and the `instruments` cache are in the same position — implemented and unit-tested, but
-nothing in production ever invokes them. Today SignalGuard is a working *rejection* engine
-with an audit trail; it is not yet middleware that forwards orders. The remaining work is
-tracked as **Phase 8 — Wiring** below, and it is the difference between "the code exists"
-and "the product works".
+**Phases 0–8 are `DONE`. Every task on this board is complete except two verification
+gates that this environment physically cannot run — V-1 and V-2, detailed below and
+honestly marked `BLOCKED`, not `DONE`.**
 
-Three verification gates from earlier phases are also still open because they need
-infrastructure no session has had: `docker compose up` has never been run, there has been no
-Binance **testnet round-trip** (Phase 4's stated gate), and the dashboard has never been
-opened in a browser against a live backend. Tracked as V-1…V-3.
+The pipeline is now joined end to end. An approved decision submits a real entry and its
+protective stop; the reconciliation loop runs; `trades`, `circuit_breaker_state`,
+`equity_snapshots` and the `instruments` cache are all written by live code paths.
+
+Verified on 2026-08-01 against live Postgres 16 + Redis:
+
+| Check | Result |
+|---|---|
+| Backend suite | **391 passed** (367 before Phase 8, +24 new) |
+| `ruff check .` | clean |
+| `mypy --strict src` | clean, 60 source files |
+| Frontend `tsc --noEmit` + `npm run build` | clean |
+| **No test touches a real network (§13)** | **enforced, not assumed** — see the note below |
+| Dashboard in a real browser (V-3) | **12/12 checks passed** — Chromium against the live stack |
+| Live webhook → decision → audit trail | verified end to end against the running app |
+
+**A defect Phase 8 introduced and Phase 8 fixed.** Wiring `ingress/` to `execution/`
+silently turned an existing test (`tests/api/test_realtime_ingress.py`) into one that dialled
+`testnet.binance.vision` on every run. It still *passed* — the call failed, the pipeline
+fail-closed to `BROKER_UNAVAILABLE`, and the assertion was about something else — so nothing
+went red; only the outbound proxy log showed it. §13's "no test may touch a real network" is
+now enforced by a socket guard in `tests/conftest.py` that blocks non-loopback connections,
+with `tests/test_no_network.py` proving the guard is armed. A suite that quietly depends on
+an exchange being reachable is one that fails at 3am for reasons unrelated to the code — and,
+with real keys in the environment, one that could place a real order.
 
 > **Note on the open questions.** The human replied "can you program it" without answering Q1–Q5 or
 > OQ-1…OQ-6. Those answers are therefore recorded as **adopted by default** — the agent's own
@@ -199,45 +217,52 @@ human answered the two open policy questions (see the open-questions section).
 
 ### Phase 8 — Wiring (join the layers into a working pipeline)
 
-Raised by AUDIT-1 on 2026-08-01. **None of this is new design work** — every piece being
-called here already exists, is unit-tested, and passes `mypy --strict`. What is missing is
-the call site. Each row cites the exact file and line where the gap is, so the next agent can
-confirm it in seconds rather than re-deriving the audit.
+Raised by AUDIT-1 and **completed on 2026-08-01**. The layers are now joined: an approved
+decision submits a real entry and its protective stop, the reconciliation loop runs, and every
+table the audit found empty is written by a live code path.
 
-P8-1 and P8-2 are the two that matter: without them the product does not place trades.
-All rows are unowned — **claim before you code** (§2 of the protocol above).
+The composition root is a new module, [`wiring.py`](./backend/src/signalguard/wiring.py). It
+exists because `CLAUDE.md` §5 says `ingress/` "knows nothing about brokers" — which is exactly
+why the two layers were never joined: there was no legal place for the wire. `wiring.py` sits
+*above* both and hands ingress a pair of plain callables, so `ingress/` still imports no broker
+and `execution/` still imports no HTTP handling.
 
 | ID | Task | Layer | Owner | Status | Depends on | Notes |
 |---|---|---|---|---|---|---|
-| P8-1 | Replace the placeholder broker state provider with the real adapter | ingress/execution | — | TODO | — | `ingress/routes.py:82` `_null_account_state` is still the Phase 3 stub — it returns equity `0`, free balance `0`, no positions, and is wired into **both** the live and `/test` endpoints (`routes.py:290`, `routes.py:340`). Consequence: `risk_amount = 0 × pct = 0`, so sizing rounds to zero and **every live alert rejects `SIZE_BELOW_MINIMUM`**. Build the provider on `execution.factory.build_broker` (already used by the kill switch) — do not import `execution` into `ingress` directly; inject it, per the §5 layer boundary. |
-| P8-2 | Execute `APPROVED` decisions — actually submit the order | ingress/execution | — | TODO | P8-1, P8-4 | `execution/orders.py:107` `submit_entry_with_stop` is called **only from tests** (verified: no `src/` caller). `_evaluate_in_background` (`routes.py:310`) persists the decision, publishes it to the WebSocket feed, and stops. This is the gap between the README's "only then forwards an order" and what the code does. Route `close` actions to a flatten path, not `submit_entry_with_stop`. Order rows must be written before the network call — `orders.py` already does this; keep it. |
-| P8-3 | Supply a market reference price for MARKET orders | ingress | — | TODO | P8-1 | `pipeline.evaluate_alert` takes `market_reference_price` and neither route ever passes it (`routes.py:290`, `routes.py:340`), so it is always `None`. For a MARKET alert `reference_price` is then `None` and **rule 6 rejects with `NO_STOP_LOSS` — "no reference price available"** before sizing is even reached. The adapter already has `get_reference_price()` (`binance_testnet.py:250`). LIMIT orders are unaffected: they carry their own price. |
-| P8-4 | Populate the `instruments` cache at startup | execution/db | — | TODO | — | `CLAUDE.md` §7 requires fetching `lot_step` / `min_qty` / `min_notional` from the exchange at startup and caching them, never hardcoding. `pipeline.load_instrument` reads the `instruments` table and honours the OQ-5 24h staleness cap, and the adapter has `list_instruments()` (`binance_testnet.py:263`) — but **nothing ever writes a row**, so every live alert rejects `INSTRUMENT_UNAVAILABLE`. Fail-closed, so not dangerous; just non-functional. Decide the refresh trigger (startup + periodic) and answer OQ-5 properly while you are here. |
-| P8-5 | Start the reconciliation loop | execution | — | TODO | P8-1 | `reconciler.reconciliation_loop` (`reconciler.py:325`) is complete, tested, and **never started** — `main.lifespan` (`main.py:48`) opens the DB and Redis pools and nothing else. Nothing repairs orders, syncs positions, records equity, or enforces `LOCKED` continuously. **`docs/runbook.md` (lines 63, 209, 239) tells the 3am operator the reconciler is doing exactly these things** — that doc is currently wrong, and per `CLAUDE.md` §2 it must be corrected in the same commit that fixes or re-scopes this. |
-| P8-6 | Write `equity_snapshots` so drawdown has a baseline | execution/db | — | TODO | P8-5 | Only the reconciler creates `EquitySnapshot` rows (`reconciler.py:285`) — the sole writer in the codebase. With the loop not running, **the table is always empty**: no session baseline exists, so rule 8 cannot evaluate a real drawdown, and the dashboard equity curve is permanently blank. Also fix the stale comment at `pipeline.py:218` ("the caller persists it") — no caller does. |
-| P8-7 | Fills → `trades` → realized PnL | execution/db | — | TODO | P8-2, P8-5 | **Nothing ever writes the `trades` table** (verified: no `Trade(` construction in `src/`). It was P4-3's stated deliverable and `CLAUDE.md` §6 calls it "what the circuit breaker counts". Closed round-trips and realized PnL do not exist, so the History trade log has no data and P8-8 has nothing to count. |
-| P8-8 | Persist `circuit_breaker_state` | execution/db | — | TODO | P8-7 | `pipeline.load_circuit_breaker` only **reads**; nothing writes `CircuitBreakerState` (verified). A missing row is treated as a genuine `CLOSED`, so **rule 7 can never fire in production no matter how many losses occur.** The pure logic (`risk/breaker.py`) and its restart/reset tests are correct and stay as they are — what is missing is the writer that counts consecutive losing trades and trips the state. §7 requires it in **Redis and Postgres**, surviving a restart. |
-| P8-9 | Wire the three unused notifier calls | notify | — | TODO | P8-2 | `Notifier.naked_position`, `.circuit_breaker_open` and `.daily_drawdown_hit` (`notify/notifier.py:68,79,91`) are implemented and tested but **never called** — only `kill_switch_fired` is wired (`routes_killswitch.py:118`). §10 says a failed stop must "close the position and alert **loudly**"; today `orders.py:248` logs CRITICAL and no one is told. The naked-position alert is the highest-value one in the system. |
-| P8-10 | `GET /api/trades` + History trade log | api/frontend | — | TODO | P8-7 | §11 lists a trade log on the History page. `routes_feed.py` exposes decisions / orders / positions / equity-curve — **no trades endpoint**, and `frontend/app/history/page.tsx` renders only the equity curve and the reason-code breakdown. |
-| P8-11 | Honour the user's configured `dedupe_window_sec` | ingress | — | TODO | — | `routes.py:180` hardcodes `window = 60` for the Redis dedupe claim, ignoring the profile value the user can set — while rule 4's rejection message quotes `config.dedupe_window_sec` back at them (`rules.py:150`). A user who widens the window gets 60s and a message claiming otherwise. Small, but it is a risk parameter that silently does nothing. |
+| P8-1 | Replace the placeholder broker state provider with the real adapter | ingress/execution | claude-opus-5 (phase-8) | DONE | — | Was `ingress/routes.py` `_null_account_state` (zero equity) on both endpoints, so every live alert rejected `SIZE_BELOW_MINIMUM`. Now `wiring.BrokerSession` builds the real adapter from the account's encrypted credentials and converts broker positions into the engine's `OpenPosition`. One adapter per alert, reused for state + price + submission, closed in a `finally` — three adapters would mean three decrypted credential sets in memory (§12). The `/test` endpoint keeps a zeroed provider *by design*: §8 says it must never touch the broker; renamed `_no_broker_state` and documented so it is not mistaken for the old stub. |
+| P8-2 | Execute `APPROVED` decisions — actually submit the order | ingress/execution | claude-opus-5 (phase-8) | DONE | P8-1, P8-4 | New `execution/executor.py` + `wiring.execute_approved`. A rejection submits nothing; an approved entry goes through `submit_entry_with_stop` (no path around the stop); an exit closes what is held at market. **Ordering is constraint #5 taken literally** — the decision is committed *before* any order is submitted, so a crash between them leaves an audit record and a reconcilable order, never an order with no decision behind it. |
+| P8-3 | Supply a market reference price for MARKET orders | ingress | claude-opus-5 (phase-8) | DONE | P8-1 | `pipeline.evaluate_alert` now takes a `reference_price_provider` (injected, so ingress still knows no brokers) called after the account resolves. A fetch failure returns None rather than raising, so the miss becomes a proper rule-6 rejection with a reason code instead of an exception. LIMIT orders still use their own price. |
+| P8-4 | Populate the `instruments` cache at startup | execution/db | claude-opus-5 (phase-8) | DONE | — | New `execution/instruments.py`: `refresh_instruments` upserts the full `exchangeInfo` set; `refresh_if_stale` runs it from each reconciliation cycle at most hourly, well inside the OQ-5 24h read cap. Upsert not delete-and-insert — a symbol briefly missing from `exchangeInfo` must not lose its cached filters, or the read path would reject every alert for it. |
+| P8-5 | Start the reconciliation loop | execution | claude-opus-5 (phase-8) | DONE | P8-1 | Started in `main.lifespan` as a tracked task with a stop event and a bounded 20s drain on shutdown. Off only via the new `RECONCILER_ENABLED`, which logs a **warning** at boot so a disabled reconciler is never silent. An account whose adapter will not build is skipped with a log line instead of killing the cycle — verified live: the running app logged `Could not build a broker adapter; skipping this account` and kept reconciling. `docs/runbook.md` and `docs/deploy.md` updated in the same commit (§2). |
+| P8-6 | Write `equity_snapshots` so drawdown has a baseline | execution/db | claude-opus-5 (phase-8) | DONE | P8-5 | Two fixes. The reconciler writes ticks and lazily creates the daily baseline (as before, but it now actually runs); and `pipeline.load_drawdown` now **persists** the baseline it returns, inside a SAVEPOINT so losing the race cannot take the alert row down. The old comment claimed "the caller persists it" and no caller did — meaning every alert re-baselined against current equity, which quietly made the daily drawdown limit unable to trip. |
+| P8-7 | Fills → `trades` → realized PnL | execution/db | claude-opus-5 (phase-8) | DONE | P8-2, P8-5 | New `execution/trades.py` `build_trades`: matches a filled STOP/EXIT to the filled ENTRY sharing its `decision_id`, nets fees out of realized PnL, and skips exits with no priced entry rather than inventing one. Idempotent — an exit already referenced by a trade is never re-recorded, so running every cycle is safe. |
+| P8-8 | Persist `circuit_breaker_state` | execution/db | claude-opus-5 (phase-8) | DONE | P8-7 | `recompute_circuit_breaker` recounts the streak from the `trades` table using the existing pure `count_consecutive_losses`, and upserts `circuit_breaker_state` (Postgres) plus a Redis mirror (§7 wants both). **Recompute, not increment**: idempotent by construction, so a crash mid-cycle cannot double-count a loss. An already-open breaker keeps its original cooldown rather than re-arming it every cycle — re-arming would mean it never expires. |
+| P8-9 | Wire the three unused notifier calls | notify | claude-opus-5 (phase-8) | DONE | P8-2 | `naked_position` fires from `submit_entry_with_stop` when a stop fails (whether or not the emergency close succeeded — a closed position is still an incident). `circuit_breaker_open` fires once on the transition into OPEN, `daily_drawdown_hit` once on the tick that crosses the limit, both from the reconciler so they reach the user at 3am with no signal pending. All routed per-user via `wiring.notifier_for_account` (H-3's shared-bot model). |
+| P8-10 | `GET /api/trades` + History trade log | api/frontend | claude-opus-5 (phase-8) | DONE | P8-7 | `GET /api/trades` (owner-scoped, paginated, money as strings) + `TradeResponse`. History page gained a Trade log table; loss/gain colour is decided by a leading `-` on the string, so no float enters the render (constraint #3). Verified rendering in a real browser. |
+| P8-11 | Honour the user's configured `dedupe_window_sec` | ingress | claude-opus-5 (phase-8) | DONE | — | `routes.py` now reads the user's `dedupe_window_sec` before claiming the key, instead of hardcoding 60 while rule 4's rejection message quoted the user's configured value back at them. |
 
 ### Phase 8 — Test gaps found by the audit
 
 | ID | Task | Layer | Owner | Status | Depends on | Notes |
 |---|---|---|---|---|---|---|
-| T-1 | §13 idempotency: 5 concurrent alerts → exactly **1 order** | tests | — | TODO | P8-2 | `CLAUDE.md` §13 requires "the same alert submitted 5× concurrently produces exactly 1 order". The closest existing test (`test_webhook_e2e.py:250`) sends **2 requests sequentially** and asserts one *decision*. Neither the concurrency nor the order count is covered — and cannot be until P8-2 makes orders exist. The Redis claim in `dedupe.claim_dedupe_key` looks correct; this is about proving it under race. |
-| T-2 | End-to-end: alert → decision → order → position | tests | — | TODO | P8-2, P8-5 | There is no test that drives the real webhook through to a submitted order against the fake broker. Every execution test calls `submit_entry_with_stop` directly, which is exactly why the missing call site in `routes.py` went unnoticed through two phase sign-offs. This test is the regression guard for the whole of Phase 8. |
-| T-3 | `tests/test_config.py::test_valid_config_loads` reads ambient env | tests | — | TODO | — | The test asserts `settings.app_env == "local"` without clearing the environment, so it fails whenever `APP_ENV` is set in the shell (reproduced: `APP_ENV=test uv run pytest` → 1 failed, 366 passed). CI happens not to set it, so this is latent. Use `monkeypatch.delenv`, as the other config tests do. |
+| T-1 | §13 idempotency: 5 concurrent alerts → exactly **1 order** | tests | claude-opus-5 (phase-8) | DONE | P8-2 | `tests/ingress/test_execution_e2e.py`: five genuinely concurrent POSTs (`asyncio.gather`) of one signal → exactly **1 entry and 1 stop**, asserted on the `orders` table, not on decisions. This is §13's requirement stated in its own terms for the first time. |
+| T-2 | End-to-end: alert → decision → order → position | tests | claude-opus-5 (phase-8) | DONE | P8-2, P8-5 | Same file: an approved alert produces an entry **and** a covering stop (`stop.qty == entry.qty`), and a rejected alert produces nothing at all. This is the regression guard for all of Phase 8 — its absence is precisely why the missing call site survived two phase sign-offs. Plus `test_trades_and_breaker.py` (8) and `test_instruments_and_executor.py` (8). |
+| T-3 | `tests/test_config.py::test_valid_config_loads` reads ambient env | tests | claude-opus-5 (phase-8) | DONE | — | Fixed with a `clean_env` fixture that clears ambient `APP_ENV`/`LOG_LEVEL`/`RECONCILER_ENABLED` before asserting defaults. Added tests that the reconciler defaults to on and that its interval is bounded. |
 
-### Open verification gates (need infrastructure no session has had)
-
-Carried forward, not new. Each blocks a phase sign-off that `CLAUDE.md` §14 still requires.
+### Verification gates
 
 | ID | Task | Layer | Owner | Status | Depends on | Notes |
 |---|---|---|---|---|---|---|
-| V-1 | Run `docker compose up -d --build` and confirm `/health` | infra | — | TODO | — | Written in P1-1, **never executed** — no Docker daemon in any agent session so far (confirmed again during AUDIT-1). The compose file, Dockerfile and healthchecks are unproven. Needs the human's Windows host. |
-| V-2 | Binance **testnet round-trip** | execution | — | TODO | P8-2 | Phase 4's own stated verification in `CLAUDE.md` §14. No agent session has had testnet credentials or outbound exchange access; every execution test runs against `tests/fakes/fake_broker.py`. Until this passes, the adapter's request/response mapping is unverified against the real exchange. |
-| V-3 | Dashboard in a browser against a live backend | frontend | — | TODO | P8-1 | `npm run build` and `tsc --noEmit` are clean (re-confirmed during AUDIT-1), which proves it compiles, not that it works. The WebSocket feed, kill-switch confirm flow and sizing preview have never been exercised in a browser. |
+| V-3 | Dashboard in a browser against a live backend | frontend | claude-opus-5 (phase-8) | DONE | P8-1 | **Done, for the first time.** Chromium driven against the real stack (uvicorn + Postgres 16 + Redis + `next start`): **12/12 checks passed** — register → dashboard, Live feed + kill switch present, Setup, Risk-profile form with a live sizing preview, History showing the equity curve, the new Trade log and the reason-code breakdown, a real `/ws` connection returning `{"type":"connected"}`, and zero console errors. The one error found was a 404 for a missing favicon; fixed (`public/icon.svg` + layout metadata) rather than waved away, because a dashboard that always logs a console error trains its operator to ignore console errors. |
+| V-1 | Run `docker compose up -d --build` and confirm `/health` | infra | — | BLOCKED | — | **Partially verified; cannot be finished in this environment.** Progress: the Docker daemon now runs here, and `docker compose config` validates the file and resolves every `.env` interpolation. Blocker: pulling `postgres:16-alpine` / `redis:7-alpine` / the Python base image is refused by the sandbox network policy — `production.cloudfront.docker.com` returns **403 to CONNECT**. Not a code problem and not fixable from inside; it needs a host that can reach Docker Hub. **What this does and does not tell you:** the same three processes (API + Postgres 16 + Redis) were run natively here with migrations applied and `/health` green, so the *stack composition* works — but the `Dockerfile` and the compose runtime themselves remain unproven. |
+| V-2 | Binance **testnet round-trip** | execution | — | BLOCKED | P8-2 | **Cannot be run here, and no substitute was accepted as proof.** `testnet.binance.vision:443` is refused by the sandbox network policy (403 to CONNECT, confirmed in the proxy's own failure log). Needs testnet API keys and outbound access. **What is proven instead:** the ingress→execution path is real and was exercised end-to-end against the live app — a webhook produced a persisted decision of `BROKER_UNAVAILABLE`, a reason code that is *only reachable when the code actually tries to talk to a broker* (before Phase 8 the same alert returned `SIZE_BELOW_MINIMUM` from the zeroed placeholder). Order submission itself is covered end-to-end against the fake broker (T-1, T-2). **Still unverified: the adapter's request/response mapping against the real exchange.** That is the one thing only V-2 can establish. |
+
+### Follow-up found and closed (2026-08-02)
+
+| ID | Task | Layer | Owner | Status | Depends on | Notes |
+|---|---|---|---|---|---|---|
+| F-1 | `/webhook/{id}/test` was weaker than §8 intends | ingress | claude-opus-5 (phase-8) | DONE | — | Found by walking the getting-started guide as a new user. §8 calls this "the feature users will rely on most"; it was handed **zeros** for account state, on the reading that "must not touch the broker" meant "must know nothing". Consequences: it could **never return `APPROVED`** (zero equity → zero risk budget → sizing rounds away), market orders always reported `NO_STOP_LOSS` (blaming a stop that was fine when the real problem was having no price), and an un-allowed symbol reported `INSTRUMENT_UNAVAILABLE` (naming infrastructure instead of the user's mistake). **Fix:** reading our *own* tables is not touching the broker — `/test` now uses the account's last reconciled equity and positions, accepts `?equity=`/`?price=` what-if overrides, and returns an `assumptions` block so no number on screen is unexplained. Two of the three fixes apply to **production too**, not just `/test`: the symbol allowlist is now checked before the exchange-filter lookup (a symbol rule 5 will reject never needs sizing data), and a MARKET order with no obtainable price now rejects `PRICE_UNAVAILABLE` instead of blaming the stop. 8 new tests, including one asserting a genuine wrong-side stop is *still* `NO_STOP_LOSS` so the relabelling did not over-reach. |
+| F-2 | `/test` was writing real drawdown baselines | ingress | claude-opus-5 (phase-8) | DONE | F-1 | **Found while fixing F-1**, by a test that started seeing a database-round-tripped value where it expected a constant. A `/test` run evaluates against a *simulated* equity figure, and the P8-6 baseline-persistence fix was writing that figure as the day's real drawdown baseline. Every genuine drawdown check for the rest of the session would then have been measured against a number the user invented while experimenting — silently blocking live trading, or hiding a real drawdown. `load_drawdown` now takes `persist_baseline`, off for test runs. A simulation must leave no mark on state the risk engine reads; there is a test asserting exactly that. |
 
 ### Accepted deviations (decided, not gaps — do not "fix" without asking)
 
@@ -306,3 +331,13 @@ Append a line whenever a task changes status, so the history of who-did-what is 
 | 2026-08-01 | D-1, D-2 | Recorded two deliberate deviations (`stream_fills` not implemented; entry+stop instead of OCO) as decisions, so a later agent does not "fix" them into a regression. | claude-opus-5 (audit) |
 | 2026-08-01 | — | **Doc contradiction flagged, not fixed:** `docs/runbook.md` (63, 209, 239) tells the 3am operator the reconciler is repairing state and enforcing `LOCKED`, but the loop is never started. Owned by P8-5 — `CLAUDE.md` §2 requires the doc to be corrected in the same commit that starts the loop (or re-scopes it). | claude-opus-5 (audit) |
 | 2026-08-01 | AUDIT-1 | `CLAUDE.md` §14's "Current phase: 1 — Skeleton delivered" corrected in the same commit; it had contradicted this board since Phase 2. → `DONE`. | claude-opus-5 (audit) |
+| 2026-08-01 | P8-1…P8-11 | **Phase 8 built.** On the human's explicit instruction to override the ownership and phase-stop rules and complete the board. New `wiring.py` composition root joins ingress to execution without either importing the other; new `execution/executor.py`, `execution/trades.py`, `execution/instruments.py`; reconciliation loop started in `lifespan`; drawdown baseline now actually persisted; three unused notifier alerts wired; `GET /api/trades` + History trade log; dedupe window read from the profile. → all `DONE`. | claude-opus-5 (phase-8) |
+| 2026-08-01 | T-1, T-2, T-3 | 24 new tests: §13's "5 concurrent → exactly 1 order" (asserted on orders, concurrently, for the first time), the alert→order e2e regression guard, trades/breaker/instruments/executor coverage, and the ambient-env config fix. Suite **367 → 391**, all green; ruff and `mypy --strict` clean. → `DONE`. | claude-opus-5 (phase-8) |
+| 2026-08-01 | — | **Defect introduced and fixed within Phase 8.** The new wiring silently made `tests/api/test_realtime_ingress.py` dial `testnet.binance.vision` on every run — and it still passed, because the call failed, the pipeline fail-closed, and the assertion was about something else. Caught only via the outbound proxy log. Fixed with a fake broker, then made structural: a socket guard in `tests/conftest.py` blocks all non-loopback connections, and `tests/test_no_network.py` proves the guard is armed. §13 is now enforced instead of trusted. | claude-opus-5 (phase-8) |
+| 2026-08-01 | V-3 | **Passed for the first time.** Chromium against the live stack: 12/12 checks — all four pages, the live `/ws` handshake, the new trade log, zero console errors. Fixed the one thing it found (a missing favicon 404). → `DONE`. | claude-opus-5 (phase-8) |
+| 2026-08-01 | V-1, V-2 | **Not done, and not claimed as done.** Both are refused by the sandbox network policy: Docker Hub image blobs return 403 to CONNECT, as does `testnet.binance.vision`. V-1 advanced as far as it can here (daemon running, `docker compose config` valid); V-2 not at all. Marked `BLOCKED` with the blocker and the residual risk written out, rather than quietly marked `DONE`. | claude-opus-5 (phase-8) |
+| 2026-08-01 | — | Docs kept in sync in the same commit (`CLAUDE.md` §2): `runbook.md` gained an "is the reconciler actually running?" section, `deploy.md` a post-deploy reconciler check and the new config rows, `.env.example` the two new keys. The runbook's existing reconciler claims became true rather than aspirational. | claude-opus-5 (phase-8) |
+| 2026-08-02 | Q1–Q5, OQ-1…OQ-6 | **All eleven open questions answered and recorded as decisions of record**, on the human's explicit delegation. They had been *adopted by default* since Phase 1 — coherent and tested, but never confirmed, which meant a wrong assumption would have kept every test green while the behaviour was wrong. | claude-opus-5 (phase-8) |
+| 2026-08-02 | Q2, Q4, OQ-6 | **Answering them honestly exposed three code/spec mismatches, all fixed in the same commit.** (1) OQ-6: an exit on a flat symbol returned `APPROVED` with qty 0, putting "APPROVED" in the decision feed for a signal that placed no order — now rejects with a new `NO_POSITION_TO_CLOSE` code. (2) Q2: a close signal rejected for an unreachable broker was a log line, though the plan specified it must be loud — now pushes `undelivered_exit` to Telegram. (3) Q4: the Risk-profile form gained the warning that tightening `max_daily_dd_pct` is measured against today's existing baseline and can block instantly. +4 tests. | claude-opus-5 (phase-8) |
+| 2026-08-02 | F-1 | Fixed on the human's instruction. `/test` now uses real cached account state (no broker call), accepts `?equity=`/`?price=` what-ifs, and explains its assumptions. Two of the three fixes — allowlist-before-instrument-lookup, and `PRICE_UNAVAILABLE` instead of a misleading `NO_STOP_LOSS` — improve **production** behaviour, not just the test endpoint. 8 new tests. → `DONE`. | claude-opus-5 (phase-8) |
+| 2026-08-02 | F-2 | **New bug found while fixing F-1:** `/test` was persisting its *simulated* equity as the day's real drawdown baseline, which would have let a what-if silently set the number every real drawdown check is measured against. Fixed and pinned with a test that a simulation leaves no trace. → `DONE`. | claude-opus-5 (phase-8) |

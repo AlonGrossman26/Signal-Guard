@@ -297,6 +297,26 @@ class EquityPoint(BaseModel):
     is_session_baseline: bool
 
 
+class TradeResponse(BaseModel):
+    """A closed round-trip (§6). This is what the circuit breaker counts.
+
+    `realized_pnl` is net of fees — a trade that is gross-positive but
+    fee-negative is a loss, and showing it as a win would contradict the reason
+    the breaker tripped.
+    """
+
+    id: uuid.UUID
+    symbol: str
+    side: str
+    qty: str
+    entry_price: str
+    exit_price: str
+    realized_pnl: str
+    fees: str
+    opened_at: datetime | None
+    closed_at: datetime
+
+
 # --- Kill switch --------------------------------------------------------------
 
 

@@ -142,6 +142,15 @@ export default function RiskPage() {
         </div>
         {field("Risk per trade", "risk_per_trade_pct", "Fraction of equity risked per trade, e.g. 0.01")}
         {field("Max daily drawdown", "max_daily_dd_pct", "e.g. 0.05 = block after a 5% day")}
+        {/* Q4: gates apply from the next decision, never retroactively to an open
+            position — but this one is measured against today's *existing*
+            baseline, so tightening it can block trading the instant you save.
+            That is correct behaviour and surprising enough to say out loud. */}
+        <p className="-mt-2 mb-2 text-xs text-amber-500/90">
+          Tightening this mid-session is measured against today&apos;s existing
+          equity baseline, so it can block new entries as soon as you save — even
+          before another trade. Open positions are never touched.
+        </p>
         {field("Min stop distance", "min_stop_distance_pct", "Reject a stop closer than this to entry")}
         {field("Fee/slippage buffer (bps)", "fee_slippage_buffer_bps")}
         {field("Consecutive loss threshold", "consecutive_loss_threshold")}

@@ -30,10 +30,47 @@ def _settings(**overrides: object) -> Settings:
     return Settings(_env_file=None, **{**_base_env(), **overrides})  # type: ignore[arg-type]
 
 
+# Settings that this suite asserts *defaults* for. pydantic-settings reads the
+# real environment as well as the explicit kwargs, so an ambient APP_ENV=test in
+# the shell would otherwise make a passing test fail for a reason that has
+# nothing to do with the code (reproduced: `APP_ENV=test pytest`).
+_AMBIENT_OVERRIDES = ("APP_ENV", "LOG_LEVEL", "RECONCILER_ENABLED")
+
+
+@pytest.fixture()
+def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Remove environment variables that would shadow the defaults under test."""
+    for name in _AMBIENT_OVERRIDES:
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+
+
+@pytest.mark.usefixtures("clean_env")
 def test_valid_config_loads() -> None:
     settings = _settings()
     assert settings.app_env == "local"
     assert settings.is_testnet_only is True
+
+
+@pytest.mark.usefixtures("clean_env")
+def test_reconciler_is_on_by_default() -> None:
+    """The broker is the source of truth; a cache nobody refreshes is stale data.
+
+    Off is a deliberate choice an operator has to make, never the default — with
+    the loop off there is no order repair, no position sync, no equity snapshots,
+    no closed trades, and a LOCKED account stops being continuously enforced.
+    """
+    settings = _settings()
+    assert settings.reconciler_enabled is True
+    assert settings.reconciler_interval_sec == 15
+
+
+def test_reconciler_interval_is_bounded() -> None:
+    """Neither a busy-loop against the exchange nor an interval measured in hours."""
+    with pytest.raises(ValidationError):
+        _settings(reconciler_interval_sec=1)
+    with pytest.raises(ValidationError):
+        _settings(reconciler_interval_sec=3600)
 
 
 @pytest.mark.parametrize(

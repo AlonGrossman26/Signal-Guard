@@ -74,6 +74,16 @@ class Settings(BaseSettings):
     live_trading_enabled: bool = False
     live_trading_confirmation: str = ""
 
+    # The reconciliation loop (CLAUDE.md §10). On by default, because the broker
+    # is the source of truth and local state is a cache — a cache nobody refreshes
+    # is just stale data. The switch exists for tests and for the rare operator
+    # who needs the API up while deliberately not touching the exchange; turning
+    # it off stops order repair, position sync, equity snapshots, closed-trade
+    # recording and the continuous enforcement of a LOCKED account, so the app
+    # logs a warning at boot when it is off.
+    reconciler_enabled: bool = True
+    reconciler_interval_sec: int = Field(default=15, ge=5, le=300)
+
     # Telegram notifications (CLAUDE.md §1, §10). Optional: absent means
     # notifications are simply disabled — they are an alerting convenience, never
     # a safety control, so an unconfigured bot must not stop the app from running

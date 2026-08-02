@@ -19,6 +19,7 @@ from signalguard.enums import (
     OrderType,
     ReasonCode,
     TradingState,
+    Verdict,
 )
 from signalguard.risk import evaluate
 from signalguard.risk.types import CircuitBreakerSnapshot, DrawdownSnapshot
@@ -491,3 +492,52 @@ def test_sell_and_close_are_both_exits_on_spot(action: AlertAction) -> None:
         )
     )
     assert decision.is_approved
+
+
+# --- Exits (plan §4, OQ-6) ----------------------------------------------------
+
+
+def test_exit_on_a_held_position_is_approved_for_the_held_quantity() -> None:
+    """The quantity comes from broker state, never from a calculation.
+
+    Sizing an exit could sell more than we own, or leave a remainder behind and
+    call the position closed.
+    """
+    snap = snapshot(
+        alert=alert(action=AlertAction.CLOSE, stop_price=None),
+        account=account(positions=(position(qty="0.25"),)),
+    )
+
+    decision = evaluate(snap)
+
+    assert decision.verdict is Verdict.APPROVED
+    assert decision.computed_qty == Decimal("0.25")
+
+
+def test_exit_with_no_open_position_is_rejected_not_approved() -> None:
+    """OQ-6: a `sell`/`close` with nothing held is refused, not read as a short.
+
+    The distinction that matters is the audit trail. Approving with quantity
+    zero would put "APPROVED" in the decision feed for a signal that placed no
+    order, telling the user a trade happened when none did.
+    """
+    snap = snapshot(
+        alert=alert(action=AlertAction.SELL, stop_price=None),
+        account=account(positions=()),
+    )
+
+    decision = evaluate(snap)
+
+    assert decision.verdict is Verdict.REJECTED
+    assert decision.reason_code is ReasonCode.NO_POSITION_TO_CLOSE
+    assert decision.computed_qty == Decimal("0")
+
+
+def test_an_exit_needs_no_stop_loss() -> None:
+    """You do not attach a protective stop to the order that closes a position."""
+    snap = snapshot(
+        alert=alert(action=AlertAction.CLOSE, stop_price=None),
+        account=account(positions=(position(),)),
+    )
+
+    assert evaluate(snap).verdict is Verdict.APPROVED

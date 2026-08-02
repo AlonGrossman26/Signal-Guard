@@ -17,11 +17,12 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from decimal import Decimal
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from signalguard.db.models import (
@@ -71,12 +72,27 @@ AccountStateProvider = Callable[
     [BrokerAccount], Awaitable[tuple[Decimal, Decimal, tuple[OpenPosition, ...]]]
 ]
 
+# Supplies the current market price for sizing a MARKET order. Injected for the
+# same reason as the state provider: fetching a price is broker work, and this
+# layer knows no brokers. Returning None means "no price available", which the
+# rule chain turns into a rejection rather than a guess.
+ReferencePriceProvider = Callable[[BrokerAccount, str], Awaitable[Decimal | None]]
+
 
 @dataclass(frozen=True)
 class PipelineResult:
+    """The outcome of evaluating one alert.
+
+    `account` and `alert_input` are carried out so the caller can execute an
+    approval without re-resolving what the pipeline already resolved. They are
+    None on the paths where evaluation stopped before they existed.
+    """
+
     decision: Decision
     decision_id: uuid.UUID
     latency_ms: int
+    account: BrokerAccount | None = None
+    alert_input: AlertInput | None = None
 
 
 def _pipeline_rejection(
@@ -195,6 +211,8 @@ async def load_drawdown(
     profile: RiskProfile,
     now: datetime,
     current_equity: Decimal,
+    free_balance: Decimal | None = None,
+    persist_baseline: bool = True,
 ) -> DrawdownSnapshot:
     """Find today's baseline and whether the limit has already been breached.
 
@@ -202,6 +220,13 @@ async def load_drawdown(
     session already breached the limit — not just the current one. That is what
     makes the block persist after a recovery, and it survives a restart because
     it is recomputed from stored snapshots rather than remembered in memory.
+
+    `persist_baseline=False` for **test** evaluations. A `/test` run works from a
+    simulated equity figure, and writing that as the day's baseline would let a
+    what-if question silently set the number every real drawdown check for the
+    rest of the session is measured against — either blocking live trading or
+    hiding a genuine drawdown. A simulation must never leave a mark on the state
+    the risk engine reads.
     """
     today = session_date_for(now, profile.daily_reset_time, profile.timezone)
 
@@ -215,8 +240,34 @@ async def load_drawdown(
     baseline_row = baseline_result.scalar_one_or_none()
 
     if baseline_row is None:
-        # No baseline yet for this session: the current equity becomes it. The
-        # caller persists it; a drawdown of zero cannot trip the limit.
+        # No baseline yet for this session, so the current equity becomes it and
+        # is persisted here and now. Returning a baseline without writing it (the
+        # original behaviour) meant the *next* alert looked it up, found nothing
+        # again, and re-baselined against whatever equity had become — which
+        # quietly makes a daily drawdown limit unable to ever trip.
+        if not persist_baseline:
+            return DrawdownSnapshot(
+                baseline_equity=current_equity, tripped_today=False
+            )
+        try:
+            # A SAVEPOINT, not the outer transaction: a lost race for the
+            # baseline must not take the alert row down with it.
+            async with session.begin_nested():
+                session.add(
+                    EquitySnapshot(
+                        id=uuid.uuid4(),
+                        broker_account_id=account_id,
+                        equity=current_equity,
+                        free_balance=free_balance,
+                        taken_at=now,
+                        is_session_baseline=True,
+                        session_date=today,
+                    )
+                )
+        except IntegrityError:
+            # The partial unique index did its job: a concurrent alert created
+            # the baseline first. Theirs is as valid as ours would have been.
+            logger.debug("Session baseline already created concurrently")
         return DrawdownSnapshot(baseline_equity=current_equity, tripped_today=False)
 
     baseline = baseline_row.equity
@@ -310,7 +361,7 @@ async def evaluate_alert(
     is_duplicate: bool,
     account_state_provider: AccountStateProvider,
     now: datetime,
-    market_reference_price: Decimal | None = None,
+    reference_price_provider: ReferencePriceProvider | None = None,
     is_test: bool = False,
 ) -> PipelineResult:
     """Run the full pipeline for one alert and persist the decision.
@@ -376,33 +427,48 @@ async def evaluate_alert(
             session, alert, decision, account.id, profile.version, now, started, is_test
         )
 
-    instrument = await load_instrument(
-        session, account.broker, str(payload_data["symbol"]), now
-    )
-    if instrument is None:
-        decision = _pipeline_rejection(
-            config,
-            ReasonCode.INSTRUMENT_UNAVAILABLE,
-            f"no fresh exchange filters for {payload_data['symbol']}",
-        )
-        return await _finish(
-            session, alert, decision, account.id, profile.version, now, started, is_test
-        )
+    # Exchange filters are only needed to *size* a trade, and a symbol the user
+    # has not allowed will never be sized — rule 5 short-circuits long before
+    # rule 9. Fetching first meant an un-allowed symbol was refused with
+    # INSTRUMENT_UNAVAILABLE, which names a fixable-looking infrastructure
+    # problem instead of the user's actual mistake, and sends them debugging
+    # the wrong thing (F-1). The engine still produces every verdict; this only
+    # decides whether we bother doing a lookup whose answer cannot matter.
+    symbol = str(payload_data["symbol"])
+    instrument: InstrumentSpec | None = None
+    if symbol in config.allowed_symbols:
+        instrument = await load_instrument(session, account.broker, symbol, now)
+        if instrument is None:
+            decision = _pipeline_rejection(
+                config,
+                ReasonCode.INSTRUMENT_UNAVAILABLE,
+                f"no fresh exchange filters for {symbol}",
+            )
+            return await _finish(
+                session, alert, decision, account.id, profile.version, now,
+                started, is_test,
+            )
 
     breaker = await load_circuit_breaker(session, account.id)
-    drawdown = await load_drawdown(session, account.id, profile, now, equity)
+    drawdown = await load_drawdown(
+        session, account.id, profile, now, equity, free_balance,
+        persist_baseline=not is_test,
+    )
 
     alert_input = build_alert_input(payload_data, alert.dedupe_key)
 
     # A limit order carries its own price. A market order does not, so sizing
     # needs a reference price fetched at evaluation time (plan §2, A8) — supplied
     # by the caller, because fetching it is broker work and this layer knows no
-    # brokers. Without one, sizing has nothing to work from and rule 9 rejects.
-    reference_price = (
-        alert_input.limit_price
-        if alert_input.order_type is OrderType.LIMIT
-        else market_reference_price
-    )
+    # brokers. Without one, sizing has nothing to work from and rule 6 rejects.
+    if alert_input.order_type is OrderType.LIMIT:
+        reference_price = alert_input.limit_price
+    elif reference_price_provider is not None:
+        reference_price = await reference_price_provider(
+            account, alert_input.symbol
+        )
+    else:
+        reference_price = None
 
     snapshot = Snapshot(
         now=now,
@@ -416,8 +482,48 @@ async def evaluate_alert(
         reference_price=reference_price,
     )
     decision = evaluate(snapshot)
+    decision = _clarify_missing_price(decision, alert_input, reference_price)
     return await _finish(
-        session, alert, decision, account.id, profile.version, now, started, is_test
+        session,
+        alert,
+        decision,
+        account.id,
+        profile.version,
+        now,
+        started,
+        is_test,
+        account=account,
+        alert_input=alert_input,
+    )
+
+
+def _clarify_missing_price(
+    decision: Decision, alert: AlertInput, reference_price: Decimal | None
+) -> Decision:
+    """Rename a rejection that blames the stop when the real cause was no price.
+
+    Rule 6 cannot validate a stop without a price to validate it against, so it
+    rejects — correctly. But it reports `NO_STOP_LOSS`, which tells a user their
+    stop is wrong when the stop was fine and the price lookup was what failed.
+    They then go and "fix" a correct stop (F-1).
+
+    **The verdict is untouched — only the label.** This runs *after* the engine
+    precisely so §7's ordering still decides everything: a locked account, an
+    invalid payload, a stale or duplicate alert, a disallowed symbol all
+    short-circuit earlier and are never relabelled. We only get here when rules
+    1-5 passed and rule 6 was the first to object.
+    """
+    if decision.reason_code is not ReasonCode.NO_STOP_LOSS:
+        return decision
+    if reference_price is not None or alert.order_type is not OrderType.MARKET:
+        return decision
+    return replace(
+        decision,
+        reason_code=ReasonCode.PRICE_UNAVAILABLE,
+        reason_detail=(
+            "no market price available to size this order or validate its stop; "
+            "the stop itself was not the problem"
+        ),
     )
 
 
@@ -430,6 +536,9 @@ async def _finish(
     now: datetime,
     started: datetime,
     is_test: bool,
+    *,
+    account: BrokerAccount | None = None,
+    alert_input: AlertInput | None = None,
 ) -> PipelineResult:
     latency_ms = max(0, int((datetime.now(UTC) - started).total_seconds() * 1000))
     decision_id = await persist_decision(
@@ -443,5 +552,9 @@ async def _finish(
         is_test=is_test,
     )
     return PipelineResult(
-        decision=decision, decision_id=decision_id, latency_ms=latency_ms
+        decision=decision,
+        decision_id=decision_id,
+        latency_ms=latency_ms,
+        account=account,
+        alert_input=alert_input,
     )

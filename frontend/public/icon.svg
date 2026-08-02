@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <title>SignalGuard</title>
+  <!-- A shield: the product's whole job is saying no. -->
+  <path d="M16 2 4 7v9c0 7.2 5 12.6 12 14 7-1.4 12-6.8 12-14V7L16 2z" fill="#16a34a"/>
+  <path d="M16 5 7 8.8V16c0 5.6 3.8 10 9 11.2 5.2-1.2 9-5.6 9-11.2V8.8L16 5z" fill="#0a0a0a"/>
+  <!-- The signal it lets through. -->
+  <path d="M10 17.5l4 4 8-9" fill="none" stroke="#16a34a" stroke-width="3"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

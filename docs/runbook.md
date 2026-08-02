@@ -241,6 +241,30 @@ mean a decision was reached yet — check the `decisions` table for the alert.
   continues by design, so one bad cycle is not fatal; a *persistent* failure
   means the broker is unreachable (§6) or credentials are wrong.
 
+### Is the reconciler actually running?
+
+Ask this first whenever local state looks stale — orders stuck in `SUBMITTED`,
+positions not moving, an empty equity curve, or a `LOCKED` account that is still
+holding something. The loop is what repairs all of those, and if it is not
+running none of them will ever correct themselves.
+
+```powershell
+docker compose logs api | Select-String "Reconciliation loop"
+```
+
+Three possible answers:
+
+| Log line | Meaning |
+|---|---|
+| `Reconciliation loop started` | Normal. It runs every `RECONCILER_INTERVAL_SEC` (default 15). |
+| `Reconciliation loop is DISABLED` | Someone set `RECONCILER_ENABLED=false`. **Nothing is being repaired** — no order repair, no position sync, no equity snapshots, no closed trades, and a `LOCKED` account is not being continuously flattened. Turn it back on unless you know why it is off. |
+| Neither line | The process did not get through startup. Check `/health` and the lines above it. |
+
+`Could not build a broker adapter; skipping this account` is not a loop failure —
+it means one account's credentials will not decrypt or names an unsupported
+broker. The loop deliberately skips it and reconciles everything else, so one bad
+account cannot stop the rest. Fix that account's credentials; the others are fine.
+
 ---
 
 ## 9. Migrations

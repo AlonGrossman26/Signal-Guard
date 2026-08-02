@@ -8,7 +8,7 @@ import {
 } from "lightweight-charts";
 import Shell from "@/components/Shell";
 import { api } from "@/lib/api";
-import type { Decision, EquityPoint } from "@/lib/types";
+import type { Decision, EquityPoint, Trade } from "@/lib/types";
 
 function EquityChart({ points }: { points: EquityPoint[] }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -60,9 +60,11 @@ function EquityChart({ points }: { points: EquityPoint[] }) {
 export default function HistoryPage() {
   const [points, setPoints] = useState<EquityPoint[]>([]);
   const [byReason, setByReason] = useState<Record<string, number>>({});
+  const [trades, setTrades] = useState<Trade[]>([]);
 
   useEffect(() => {
     api.get<EquityPoint[]>("/api/equity-curve").then(setPoints).catch(() => undefined);
+    api.get<Trade[]>("/api/trades?limit=100").then(setTrades).catch(() => undefined);
     api
       .get<Decision[]>("/api/decisions?limit=200")
       .then((rows) => {
@@ -88,6 +90,64 @@ export default function HistoryPage() {
             <p className="p-4 text-sm text-neutral-500">No equity snapshots yet.</p>
           ) : (
             <EquityChart points={points} />
+          )}
+        </div>
+      </section>
+
+      <section className="mb-8">
+        <h2 className="mb-2 text-sm font-semibold uppercase text-neutral-500">
+          Trade log
+        </h2>
+        <div className="overflow-x-auto rounded border border-neutral-800">
+          {trades.length === 0 ? (
+            <p className="p-4 text-sm text-neutral-500">
+              No closed trades yet. A trade appears here once a position has been
+              opened and closed — it is what the circuit breaker counts.
+            </p>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="text-left text-xs uppercase text-neutral-500">
+                <tr>
+                  <th className="p-3">Closed</th>
+                  <th className="p-3">Symbol</th>
+                  <th className="p-3">Side</th>
+                  <th className="p-3 text-right">Qty</th>
+                  <th className="p-3 text-right">Entry</th>
+                  <th className="p-3 text-right">Exit</th>
+                  <th className="p-3 text-right">Fees</th>
+                  <th className="p-3 text-right">Realized PnL</th>
+                </tr>
+              </thead>
+              <tbody>
+                {trades.map((t) => {
+                  // Compare as a string-free sign test: a leading "-" is the only
+                  // thing that decides colour, so no float ever enters the render.
+                  const isLoss = t.realized_pnl.trimStart().startsWith("-");
+                  return (
+                    <tr key={t.id} className="border-t border-neutral-800">
+                      <td className="p-3 text-neutral-400">
+                        {new Date(t.closed_at).toLocaleString()}
+                      </td>
+                      <td className="p-3">{t.symbol}</td>
+                      <td className="p-3 text-neutral-400">{t.side}</td>
+                      <td className="p-3 text-right tabular-nums">{t.qty}</td>
+                      <td className="p-3 text-right tabular-nums">{t.entry_price}</td>
+                      <td className="p-3 text-right tabular-nums">{t.exit_price}</td>
+                      <td className="p-3 text-right tabular-nums text-neutral-400">
+                        {t.fees}
+                      </td>
+                      <td
+                        className={`p-3 text-right font-semibold tabular-nums ${
+                          isLoss ? "text-reject" : "text-approve"
+                        }`}
+                      >
+                        {t.realized_pnl}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           )}
         </div>
       </section>

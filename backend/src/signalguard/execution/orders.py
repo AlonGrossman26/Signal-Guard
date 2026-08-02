@@ -31,6 +31,7 @@ from signalguard.execution.base import (
     BrokerOrder,
     OrderRequest,
 )
+from signalguard.notify import Notifier
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,7 @@ class ExecutionResult:
         return self.entry is not None and self.stop is not None
 
 
-async def _record_order(
+async def record_order(
     session: AsyncSession,
     *,
     decision_id: uuid.UUID,
@@ -94,7 +95,7 @@ async def _record_order(
     return row
 
 
-def _apply_broker_result(row: OrderRow, result: BrokerOrder) -> None:
+def apply_broker_result(row: OrderRow, result: BrokerOrder) -> None:
     row.broker_order_id = result.broker_order_id
     row.status = result.status.value
     row.filled_qty = result.filled_qty
@@ -116,8 +117,16 @@ async def submit_entry_with_stop(
     qty: Decimal,
     limit_price: Decimal | None,
     stop_price: Decimal,
+    notifier: Notifier | None = None,
+    account_label: str = "account",
 ) -> ExecutionResult:
-    """Submit an entry and its protective stop, or leave nothing behind."""
+    """Submit an entry and its protective stop, or leave nothing behind.
+
+    `notifier` is optional and best-effort. It exists for one message in
+    particular: a position that could not be protected. A CRITICAL log line is
+    the right permanent record, but nobody is reading logs at 3am — §10 says
+    alert **loudly**, and that means pushing, not writing.
+    """
     entry_request = OrderRequest(
         client_order_id=new_client_order_id(),
         symbol=symbol,
@@ -126,7 +135,7 @@ async def submit_entry_with_stop(
         qty=qty,
         price=limit_price,
     )
-    entry_row = await _record_order(
+    entry_row = await record_order(
         session,
         decision_id=decision_id,
         broker_account_id=broker_account_id,
@@ -148,7 +157,7 @@ async def submit_entry_with_stop(
         )
         return ExecutionResult(entry=None, stop=None, error=exc.code.value)
 
-    _apply_broker_result(entry_row, entry)
+    apply_broker_result(entry_row, entry)
     await session.flush()
 
     # The position now exists and is unprotected. Everything below runs against
@@ -164,7 +173,7 @@ async def submit_entry_with_stop(
         qty=protected_qty,
         stop_price=stop_price,
     )
-    stop_row = await _record_order(
+    stop_row = await record_order(
         session,
         decision_id=decision_id,
         broker_account_id=broker_account_id,
@@ -196,12 +205,17 @@ async def submit_entry_with_stop(
             side=exit_side,
             qty=protected_qty,
         )
+        # Alert either way. A position we closed is a resolved incident the user
+        # still needs to know about; one we could not close is the most urgent
+        # thing this system can produce.
+        if notifier is not None:
+            await notifier.naked_position(account_label, symbol)
         return ExecutionResult(
             entry=entry, stop=None, naked_position_closed=closed,
             error=f"stop_failed:{exc.code.value}",
         )
 
-    _apply_broker_result(stop_row, stop)
+    apply_broker_result(stop_row, stop)
     await session.flush()
     return ExecutionResult(entry=entry, stop=stop)
 
@@ -230,7 +244,7 @@ async def _emergency_close(
         order_type=OrderType.MARKET,
         qty=qty,
     )
-    close_row = await _record_order(
+    close_row = await record_order(
         session,
         decision_id=decision_id,
         broker_account_id=broker_account_id,
@@ -255,7 +269,7 @@ async def _emergency_close(
         )
         return False
 
-    _apply_broker_result(close_row, closed)
+    apply_broker_result(close_row, closed)
     await session.flush()
     logger.warning(
         "Naked position closed after stop placement failed",

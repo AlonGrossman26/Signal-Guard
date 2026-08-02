@@ -63,6 +63,23 @@ def _approve(snapshot: Snapshot) -> Decision:
             else None
         )
         qty = abs(position.qty) if position is not None else Decimal("0")
+
+        if qty <= 0:
+            # Nothing is held, so there is nothing to close (plan §4, OQ-6: a
+            # `sell` with no position is refused rather than read as a short).
+            # Rejecting rather than approving-with-zero is an audit-trail
+            # decision: an APPROVED row for a signal that placed no order tells
+            # the user a trade happened when none did, and the decision feed is
+            # the one thing in this product that must never mislead.
+            return Decision(
+                verdict=Verdict.REJECTED,
+                reason_code=ReasonCode.NO_POSITION_TO_CLOSE,
+                reason_detail=f"no open position in {alert.symbol} to close",
+                computed_qty=Decimal("0"),
+                entry_reference_price=snapshot.reference_price,
+                rule_snapshot=snapshot.config.as_snapshot_dict(),
+            )
+
         return Decision(
             verdict=Verdict.APPROVED,
             reason_code=ReasonCode.APPROVED,

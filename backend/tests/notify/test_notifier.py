@@ -127,3 +127,27 @@ def test_notifier_for_user_none_without_a_bot_token() -> None:
 def test_notifier_for_user_none_without_any_chat() -> None:
     # Token but no chat anywhere → nowhere to send.
     assert notifier_for_user(_settings(telegram_bot_token="123:abc"), None) is None
+
+
+async def test_undelivered_exit_tells_the_user_they_may_still_be_holding() -> None:
+    """plan §3 Q2's uncomfortable case, made loud rather than hidden.
+
+    Rejecting a close signal is the correct behaviour when the broker is
+    unreachable — we cannot place the closing order either, so accepting it
+    would be a lie. But the user is left in a position they explicitly asked to
+    exit, and they will not learn that from a rejection row on a dashboard they
+    are not looking at.
+    """
+    sent: list[str] = []
+    notifier = _notifier_capturing(sent)
+
+    assert await notifier.undelivered_exit("binance-testnet-1", "BROKER_UNAVAILABLE")
+
+    message = sent[0]
+    assert "EXIT SIGNAL NOT DELIVERED" in message
+    assert "binance-testnet-1" in message
+    assert "BROKER_UNAVAILABLE" in message
+    # The two things the user has to know: nothing was placed, and they should
+    # go and look.
+    assert "no closing order was placed" in message
+    assert "still be holding" in message

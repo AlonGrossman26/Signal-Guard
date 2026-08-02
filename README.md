@@ -15,55 +15,30 @@ The entire value of this product is that it says **no** reliably. Correctness be
 
 ## Quick start
 
-You need [Docker Desktop](https://www.docker.com/products/docker-desktop/) running.
+**First time here? Follow [`docs/getting-started.md`](./docs/getting-started.md)** — a step-by-step
+walkthrough from installing Docker to watching a real order land on the Binance testnet, including
+how to get your testnet API key.
 
-**1. Create your `.env`**
-
-```powershell
-Copy-Item .env.example .env      # PowerShell
-```
-```bash
-cp .env.example .env             # Git Bash / Linux
-```
-
-**2. Fill in the secrets.** The app refuses to start without them — that is deliberate, and the
-startup error tells you exactly what to run. Generate each one:
+The short version, if you already have Docker Desktop running:
 
 ```powershell
-python -c "import base64,secrets;print(base64.b64encode(secrets.token_bytes(32)).decode())"   # CREDENTIALS_MASTER_KEY
-python -c "import secrets;print(secrets.token_urlsafe(32))"                                   # ENDPOINT_ID_PEPPER
-python -c "import secrets;print(secrets.token_urlsafe(32))"                                   # SESSION_SECRET
-```
-
-Also set `POSTGRES_PASSWORD` to anything you like, and put the same value into the `DATABASE_URL`
-line (between `signalguard:` and `@db`).
-
-**3. Start the stack and create the schema**
-
-```powershell
+Copy-Item .env.example .env
+# Fill in the three secrets — the app refuses to start without them and the
+# error tells you the exact command to generate each one.
 docker compose up -d --build
 docker compose exec api uv run alembic upgrade head
+Invoke-RestMethod http://localhost:8000/health      # expect "status": "green"
 ```
 
-**4. Check it is alive**
+The dashboard is not containerized yet and runs separately (needs Node 20+):
 
 ```powershell
-Invoke-RestMethod http://localhost:8000/health
+cd frontend
+npm install
+npm run dev                                          # then open http://localhost:3000
 ```
 
-Expected:
-
-```json
-{
-  "status": "green",
-  "version": "0.1.0",
-  "checks": { "postgres": {"status": "up"}, "redis": {"status": "up"} }
-}
-```
-
-A `503` with `"status": "degraded"` means a dependency is down, and the response names which one.
-That is the endpoint working correctly — it reports honestly rather than returning 200 whenever the
-web server happens to be up.
+Use `localhost`, not `127.0.0.1` — the API's CORS allowlist only accepts the former by default.
 
 ---
 
@@ -88,9 +63,12 @@ PowerShell note: `&&` is a parser error in PowerShell 5.1. Chain with `A; if ($?
 
 | Document | What it is |
 |---|---|
+| [`docs/getting-started.md`](./docs/getting-started.md) | **Start here.** From zero to a live testnet trade, step by step. |
 | [`CLAUDE.md`](./CLAUDE.md) | The rules. Hard constraints, architecture, risk-engine spec. |
-| [`PROJECT_MANAGEMENT.md`](./PROJECT_MANAGEMENT.md) | The task board — who is working on what, and open questions. |
-| [`docs/phase-0-plan.md`](./docs/phase-0-plan.md) | The plan: assumptions, data model, and the open questions. |
+| [`PROJECT_MANAGEMENT.md`](./PROJECT_MANAGEMENT.md) | The task board — status of every task, and the answered open questions. |
+| [`docs/runbook.md`](./docs/runbook.md) | The 3am runbook. Something is broken and you need it fixed now. |
+| [`docs/deploy.md`](./docs/deploy.md) | Deployment reference: config, migrations, health, ops. |
+| [`docs/phase-0-plan.md`](./docs/phase-0-plan.md) | The original plan: assumptions, data model, and the reasoning behind each decision. |
 
 ---
 
@@ -101,12 +79,19 @@ backend/src/signalguard/
   config.py        settings; fails closed on missing secrets
   logging.py       structured JSON + automatic secret redaction
   enums.py         verdicts, reason codes, order states
+  wiring.py        composition root — the only module that knows both ends
   db/              models and session management
-  api/             HTTP routes (health so far)
-  ingress/         webhook receiver            — Phase 3
-  risk/            pure decision logic, NO I/O — Phase 2
-  execution/       broker adapters             — Phase 4
+  api/             dashboard REST API + WebSocket
+  ingress/         webhook receiver, auth, dedupe   — knows HTTP, not brokers
+  risk/            pure decision logic, NO I/O      — the 10 rules and sizing
+  execution/       broker adapter, orders, reconciler, trades, kill switch
+  notify/          Telegram alerts
+frontend/          Next.js dashboard: Live, Risk profile, History, Setup
 ```
+
+`risk/` contains **zero I/O** — no database, no network, no clock reads. It takes a fully populated
+snapshot and returns a decision. That is what makes the whole rule set testable in milliseconds, and
+a test asserts the purity so it cannot regress.
 
 `risk/` will contain **zero I/O** — no database, no network, not even a clock read (the current time
 is passed in). That is what makes the engine exhaustively testable, and it is the single most
